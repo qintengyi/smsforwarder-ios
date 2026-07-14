@@ -72,7 +72,10 @@ struct SettingsView: View {
                     .keyboardType(.numbersAndPunctuation)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                TextField("端口", value: $vm.devicePort, format: .number)
+                TextField("端口", text: Binding(
+                    get: { String(vm.devicePort) },
+                    set: { vm.devicePort = Int($0) ?? vm.devicePort }
+                ))
                     .keyboardType(.numberPad)
             } footer: {
                 Text("默认地址为 192.168.1.16:5000，请确保 iPhone 与 SmsForwarder 设备在同一局域网。")

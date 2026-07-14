@@ -150,7 +150,7 @@ struct LocationView: View {
         mapItem.name = loc.address ?? "设备位置"
         mapItem.openInMaps(launchOptions: [
             MKLaunchOptionsMapCenterKey: NSValue(mkCoordinate: coordinate),
-            MKLaunchOptionsMapSpanKey: NSValue(mkMapSpan: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01))
+            MKLaunchOptionsMapSpanKey: NSValue(mkCoordinateSpan: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01))
         ])
     }
 }
