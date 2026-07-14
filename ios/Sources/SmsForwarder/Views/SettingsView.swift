@@ -5,9 +5,7 @@ import Observation
 
 @Observable
 final class SettingsViewModel {
-    var deviceIP: String
-    var devicePort: Int
-    var secretKey: String
+    var serverURL: String
     var isTesting: Bool = false
     var showAlert: Bool = false
     var alertTitle: String = ""
@@ -18,39 +16,26 @@ final class SettingsViewModel {
 
     init() {
         let settings = store.settings
-        self.deviceIP = settings.deviceIP
-        self.devicePort = settings.devicePort
-        self.secretKey = settings.secretKey
-    }
-
-    var portText: String {
-        get { String(devicePort) }
-        set { devicePort = Int(newValue) ?? devicePort }
+        self.serverURL = settings.serverURL
     }
 
     func save() {
-        store.save(AppSettings(
-            deviceIP: deviceIP.trimmingCharacters(in: .whitespacesAndNewlines),
-            devicePort: devicePort,
-            secretKey: secretKey
-        ))
+        let trimmed = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        store.save(AppSettings(serverURL: trimmed))
         alertTitle = "已保存"
-        alertMessage = "设备连接配置已保存。"
+        alertMessage = "Web 面板地址已保存。"
         showAlert = true
     }
 
     func testConnection() async {
         isTesting = true
         defer { isTesting = false }
-        store.save(AppSettings(
-            deviceIP: deviceIP.trimmingCharacters(in: .whitespacesAndNewlines),
-            devicePort: devicePort,
-            secretKey: secretKey
-        ))
+        let trimmed = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        store.save(AppSettings(serverURL: trimmed))
         do {
             _ = try await api.queryConfig()
             alertTitle = "连接成功"
-            alertMessage = "设备已响应 config/query。"
+            alertMessage = "Web 面板已响应，设备配置获取正常。"
             showAlert = true
         } catch {
             alertTitle = "连接失败"
@@ -68,29 +53,14 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                TextField("设备 IP", text: $vm.deviceIP)
-                    .keyboardType(.numbersAndPunctuation)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                TextField("端口", text: Binding(
-                    get: { String(vm.devicePort) },
-                    set: { vm.devicePort = Int($0) ?? vm.devicePort }
-                ))
-                    .keyboardType(.numberPad)
-            } header: {
-                Text("设备地址")
-            } footer: {
-                Text("默认地址为 192.168.1.16:5000，请确保 iPhone 与 SmsForwarder 设备在同一局域网。")
-            }
-
-            Section {
-                SecureField("Secret Key", text: $vm.secretKey)
+                TextField("http://192.168.1.100:5001", text: $vm.serverURL)
+                    .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
             } header: {
-                Text("安全密钥")
+                Text("Web 面板地址")
             } footer: {
-                Text("该密钥用于生成 HMAC-SHA256 签名，需要与 SmsForwarder 服务端配置一致。")
+                Text("填入 SmsForwarder Web 控制面板的完整地址（含端口号）。iPhone 需与面板所在服务器网络互通。")
             }
 
             Section {
@@ -114,6 +84,14 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .disabled(vm.isTesting)
+            }
+
+            Section {
+                Text("iOS App 通过 Web 面板的 JSON API 获取数据，面板内部管理 SmsForwarder 设备的 IP、端口和签名密钥。无需在手机端逐台配置设备。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("说明")
             }
         }
         .scrollContentBackground(.hidden)

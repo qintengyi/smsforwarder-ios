@@ -101,15 +101,12 @@ extension KeyedDecodingContainer {
 // MARK: - 应用设置模型
 
 /// 设置页使用的本地配置（持久化到 UserDefaults）
+/// 只需一个 Web 面板地址，Flask 面板内部管理设备 IP/端口/密钥
 struct AppSettings: Codable, Equatable {
-    var deviceIP: String
-    var devicePort: Int
-    var secretKey: String
+    var serverURL: String
 
     static let `default` = AppSettings(
-        deviceIP: "192.168.1.16",
-        devicePort: 5000,
-        secretKey: ""
+        serverURL: "http://192.168.1.100:5001"
     )
 }
 

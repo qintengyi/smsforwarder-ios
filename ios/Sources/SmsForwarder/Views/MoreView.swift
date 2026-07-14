@@ -32,7 +32,7 @@ struct MoreView: View {
                     NavigationLink {
                         SettingsView()
                     } label: {
-                        MoreRow(icon: "gearshape.fill", title: "设置", subtitle: "设备 IP、端口与密钥", color: .gray)
+                        MoreRow(icon: "gearshape.fill", title: "设置", subtitle: "Web 面板地址", color: .gray)
                     }
                 }
             }

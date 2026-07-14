@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 import Observation
 
 // MARK: - API 错误
@@ -15,7 +14,7 @@ enum APIError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidURL:
-            return "设备地址无效，请在设置中检查 IP 与端口。"
+            return "Web 面板地址无效，请在设置中检查服务器地址。"
         case .invalidResponse:
             return "服务器响应格式异常。"
         case .httpError(let code):
@@ -32,8 +31,8 @@ enum APIError: LocalizedError {
 
 // MARK: - SmsForwarderAPI
 
-/// SmsForwarder 设备 API 网络层
-/// 负责生成签名、发起 POST 请求、解码响应
+/// Web 面板 API 网络层
+/// 通过 Flask 面板的 JSON API 获取数据，不再直接连设备
 final class SmsForwarderAPI {
     static let shared = SmsForwarderAPI()
 
@@ -45,49 +44,60 @@ final class SmsForwarderAPI {
         self.settingsStore = settingsStore
     }
 
-    // MARK: - 签名生成
+    // MARK: - URL 构建
 
-    /// 生成请求签名
-    /// 1. sign_str = "{timestamp}\n{secret_key}"
-    /// 2. HMAC-SHA256(key=secret_key.utf8, msg=sign_str.utf8) -> Data
-    /// 3. base64 编码 -> String
-    /// 4. 对该字符串做 URL 编码 -> 最终 sign
-    func generateSign(timestamp: Int64, secretKey: String) -> String {
-        let signStr = "\(timestamp)\n\(secretKey)"
-        let keyData = Data(secretKey.utf8)
-        let msgData = Data(signStr.utf8)
-        let mac = HMAC<SHA256>.authenticationCode(for: msgData, using: SymmetricKey(data: keyData))
-        let base64Str = Data(mac).base64EncodedString()
-        // URL 编码（percent encoding）
-        return base64Str.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? base64Str
+    /// 构建 Flask API 的完整 URL
+    /// - Parameters:
+    ///   - path: API 路径，如 "config"（会拼接为 /api/config）
+    ///   - queryItems: URL 查询参数
+    /// - Returns: 构建好的 URL
+    private func buildURL(path: String, queryItems: [URLQueryItem] = []) throws -> URL {
+        let settings = settingsStore.settings
+        guard !settings.serverURL.isEmpty else {
+            throw APIError.invalidURL
+        }
+
+        var components = URLComponents(string: settings.serverURL)
+        // 规范化路径：去掉尾部斜杠，避免拼接出 //api/xxx
+        var basePath = components?.path ?? ""
+        if basePath.hasSuffix("/") {
+            basePath.removeLast()
+        }
+        components?.path = basePath + "/api/\(path)"
+        if !queryItems.isEmpty {
+            components?.queryItems = queryItems
+        }
+
+        guard let url = components?.url else {
+            throw APIError.invalidURL
+        }
+        return url
     }
 
     // MARK: - 统一请求
 
+    /// 统一 GET 请求封装
+    /// - Parameters:
+    ///   - path: API 路径，如 "config"（会拼接为 /api/config）
+    ///   - queryItems: URL 查询参数
+    /// - Returns: 解码后的 APIResponse<T>
+    func get<T: Decodable>(path: String, queryItems: [URLQueryItem] = []) async throws -> APIResponse<T> {
+        let url = try buildURL(path: path, queryItems: queryItems)
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.timeoutInterval = 15
+
+        return try await perform(req)
+    }
+
     /// 统一 POST 请求封装
     /// - Parameters:
-    ///   - endpoint: 接口端点，如 "config/query"
-    ///   - data: 业务参数（可空，默认空字典）
+    ///   - path: API 路径，如 "sms/send"（会拼接为 /api/sms/send）
+    ///   - body: 请求体参数
     /// - Returns: 解码后的 APIResponse<T>
-    func request<T: Decodable>(endpoint: String, data: [String: Any] = [:]) async throws -> APIResponse<T> {
-        let settings = settingsStore.settings
-        guard !settings.deviceIP.isEmpty, settings.devicePort > 0 else {
-            throw APIError.invalidURL
-        }
-
-        let urlString = "http://\(settings.deviceIP):\(settings.devicePort)/\(endpoint)"
-        guard let url = URL(string: urlString) else {
-            throw APIError.invalidURL
-        }
-
-        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
-        let sign = generateSign(timestamp: timestamp, secretKey: settings.secretKey)
-
-        let payload: [String: Any] = [
-            "timestamp": timestamp,
-            "sign": sign,
-            "data": data
-        ]
+    func post<T: Decodable>(path: String, body: [String: Any] = [:]) async throws -> APIResponse<T> {
+        let url = try buildURL(path: path)
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -95,11 +105,16 @@ final class SmsForwarderAPI {
         req.timeoutInterval = 15
 
         do {
-            req.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
+            req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
         } catch {
             throw APIError.decodeError("请求体序列化失败：\(error.localizedDescription)")
         }
 
+        return try await perform(req)
+    }
+
+    /// 执行请求并解码响应
+    private func perform<T: Decodable>(_ req: URLRequest) async throws -> APIResponse<T> {
         let (rawData, response): (Data, URLResponse)
         do {
             (rawData, response) = try await session.data(for: req)
@@ -128,7 +143,7 @@ final class SmsForwarderAPI {
 
     /// 查询设备配置
     func queryConfig() async throws -> DeviceConfig {
-        let resp: APIResponse<DeviceConfig> = try await request(endpoint: "config/query")
+        let resp: APIResponse<DeviceConfig> = try await get(path: "config")
         return resp.data ?? DeviceConfig()
     }
 
@@ -139,12 +154,12 @@ final class SmsForwarderAPI {
     ///   - msgContent: 短信内容
     func sendSMS(simSlot: Int, phoneNumbers: String, msgContent: String) async throws -> String {
         struct EmptyResult: Decodable {}
-        let data: [String: Any] = [
+        let body: [String: Any] = [
             "sim_slot": simSlot,
             "phone_numbers": phoneNumbers,
             "msg_content": msgContent
         ]
-        let resp: APIResponse<EmptyResult> = try await request(endpoint: "sms/send", data: data)
+        let resp: APIResponse<EmptyResult> = try await post(path: "sms/send", body: body)
         return resp.msg ?? "发送成功"
     }
 
@@ -155,14 +170,13 @@ final class SmsForwarderAPI {
     ///   - pageSize: 每页数量
     ///   - keyword: 关键字
     func querySMS(type: Int, pageNum: Int, pageSize: Int, keyword: String) async throws -> [SmsRecord] {
-        let data: [String: Any] = [
-            "type": type,
-            "page_num": pageNum,
-            "page_size": pageSize,
-            "keyword": keyword
+        let queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "type", value: String(type)),
+            URLQueryItem(name: "page_num", value: String(pageNum)),
+            URLQueryItem(name: "page_size", value: String(pageSize)),
+            URLQueryItem(name: "keyword", value: keyword)
         ]
-        // 后端可能在 data 中直接返回数组，也可能包在某个字段中；统一兼容两种情况
-        return try await fetchList(endpoint: "sms/query", data: data)
+        return try await fetchList(path: "sms", queryItems: queryItems)
     }
 
     /// 查询通话列表
@@ -172,56 +186,56 @@ final class SmsForwarderAPI {
     ///   - pageNum: 页码
     ///   - pageSize: 每页数量
     func queryCalls(type: Int, phoneNumber: String, pageNum: Int, pageSize: Int) async throws -> [CallRecord] {
-        let data: [String: Any] = [
-            "type": type,
-            "phone_number": phoneNumber,
-            "page_num": pageNum,
-            "page_size": pageSize
+        let queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "type", value: String(type)),
+            URLQueryItem(name: "page_num", value: String(pageNum)),
+            URLQueryItem(name: "page_size", value: String(pageSize)),
+            URLQueryItem(name: "phone_number", value: phoneNumber)
         ]
-        return try await fetchList(endpoint: "call/query", data: data)
+        return try await fetchList(path: "calls", queryItems: queryItems)
     }
 
     /// 查询联系人
     func queryContacts(phoneNumber: String, name: String) async throws -> [Contact] {
-        let data: [String: Any] = [
-            "phone_number": phoneNumber,
-            "name": name
+        let queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "phone_number", value: phoneNumber),
+            URLQueryItem(name: "name", value: name)
         ]
-        return try await fetchList(endpoint: "contact/query", data: data)
+        return try await fetchList(path: "contacts", queryItems: queryItems)
     }
 
     /// 添加联系人
     func addContact(phoneNumber: String, name: String) async throws -> String {
         struct EmptyResult: Decodable {}
-        let data: [String: Any] = [
+        let body: [String: Any] = [
             "phone_number": phoneNumber,
             "name": name
         ]
-        let resp: APIResponse<EmptyResult> = try await request(endpoint: "contact/add", data: data)
+        let resp: APIResponse<EmptyResult> = try await post(path: "contacts/add", body: body)
         return resp.msg ?? "添加成功"
     }
 
     /// 查询电量
     func queryBattery() async throws -> BatteryInfo {
-        let resp: APIResponse<BatteryInfo> = try await request(endpoint: "battery/query")
+        let resp: APIResponse<BatteryInfo> = try await get(path: "battery")
         return resp.data ?? BatteryInfo(level: nil, status: nil, health: nil, plugged: nil, voltage: nil, temperature: nil)
     }
 
     /// 远程唤醒 (Wake-On-LAN)
     func sendWOL(mac: String, ip: String, port: Int) async throws -> String {
         struct EmptyResult: Decodable {}
-        let data: [String: Any] = [
+        let body: [String: Any] = [
             "mac": mac,
             "ip": ip,
             "port": port
         ]
-        let resp: APIResponse<EmptyResult> = try await request(endpoint: "wol/send", data: data)
+        let resp: APIResponse<EmptyResult> = try await post(path: "wol", body: body)
         return resp.msg ?? "唤醒指令已发送"
     }
 
     /// 查询定位
     func queryLocation() async throws -> LocationInfo {
-        let resp: APIResponse<LocationInfo> = try await request(endpoint: "location/query")
+        let resp: APIResponse<LocationInfo> = try await get(path: "location")
         return resp.data ?? LocationInfo(address: nil, latitude: nil, longitude: nil, time: nil, provider: nil)
     }
 
@@ -229,30 +243,12 @@ final class SmsForwarderAPI {
 
     /// 后端可能以 data 字段直接返回数组，也可能包在 { "data": { "list": [...] } } 中。
     /// 此方法优先按数组解析，失败再尝试 list 字段解析，最后尝试空 data 兜底。
-    private func fetchList<T: Decodable>(endpoint: String, data: [String: Any]) async throws -> [T] {
-        let settings = settingsStore.settings
-        guard !settings.deviceIP.isEmpty, settings.devicePort > 0 else {
-            throw APIError.invalidURL
-        }
-
-        let urlString = "http://\(settings.deviceIP):\(settings.devicePort)/\(endpoint)"
-        guard let url = URL(string: urlString) else {
-            throw APIError.invalidURL
-        }
-
-        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
-        let sign = generateSign(timestamp: timestamp, secretKey: settings.secretKey)
-        let payload: [String: Any] = [
-            "timestamp": timestamp,
-            "sign": sign,
-            "data": data
-        ]
+    private func fetchList<T: Decodable>(path: String, queryItems: [URLQueryItem]) async throws -> [T] {
+        let url = try buildURL(path: path, queryItems: queryItems)
 
         var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        req.httpMethod = "GET"
         req.timeoutInterval = 15
-        req.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
 
         let (rawData, response) = try await session.data(for: req)
 
