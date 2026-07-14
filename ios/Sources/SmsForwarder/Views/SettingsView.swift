@@ -60,6 +60,7 @@ final class SettingsViewModel {
 struct SettingsView: View {
     @Environment(AppStateManager.self) private var appState
     @State private var vm = SettingsViewModel()
+    @State private var monitoringEnabled: Bool = false
 
     var body: some View {
         Form {
@@ -122,6 +123,26 @@ struct SettingsView: View {
             }
 
             Section {
+                Toggle(isOn: $monitoringEnabled) {
+                    Label("后台监听验证码", systemImage: "wave.3.right")
+                }
+                .onChange(of: monitoringEnabled) { _, value in
+                    UserDefaults.standard.set(value, forKey: "io.smsforwarder.monitoringEnabled")
+                    MonitoringCoordinator.shared.apply()
+                }
+
+                NavigationLink {
+                    CodeRulesView()
+                } label: {
+                    Label("订阅规则", systemImage: "list.bullet.rectangle")
+                }
+            } header: {
+                Text("验证码灵动岛")
+            } footer: {
+                Text("开启后保持后台连接，收到匹配规则的验证码时在灵动岛显示项目名与验证码。请保持 App 后台运行，系统极端省电下可能被回收。")
+            }
+
+            Section {
                 Text("iOS App 通过控制面板的 JSON API 获取数据。面板管理多台 SmsForwarder 设备，登录后可在仪表盘切换设备。所有数据请求通过面板代理转发到设备。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -150,6 +171,7 @@ struct SettingsView: View {
         })
         .onAppear {
             vm.appState = appState
+            monitoringEnabled = UserDefaults.standard.object(forKey: "io.smsforwarder.monitoringEnabled") as? Bool ?? false
         }
     }
 }

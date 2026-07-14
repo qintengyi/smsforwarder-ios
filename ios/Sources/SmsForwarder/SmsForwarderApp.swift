@@ -44,12 +44,20 @@ struct SmsForwarderApp: App {
             if appState.isLoggedIn {
                 ContentView()
                     .environment(appState)
+                    .task { MonitoringCoordinator.shared.setup() }
             } else {
                 LoginView()
                     .environment(appState)
                     .onAppear {
                         appState.refreshAuthState()
                     }
+            }
+        }
+        .onChange(of: appState.isLoggedIn) { _, loggedIn in
+            if loggedIn {
+                MonitoringCoordinator.shared.setup()
+            } else {
+                MonitoringCoordinator.shared.onLogout()
             }
         }
     }
