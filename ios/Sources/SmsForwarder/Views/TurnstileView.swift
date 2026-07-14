@@ -13,21 +13,15 @@ struct TurnstileConfig: Codable {
     }
 }
 
-// MARK: - Turnstile WebView 消息
-
-enum TurnstileMessage {
-    case token(String)
-    case expired
-    case error(String)
-}
-
 // MARK: - Turnstile WebView Coordinator
 
 class TurnstileCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
-    var onMessage: (TurnstileMessage) -> Void
+    var onMessage: (String?) -> Void
+    var onLoadError: (String) -> Void
 
-    init(onMessage: @escaping (TurnstileMessage) -> Void) {
+    init(onMessage: @escaping (String?) -> Void, onLoadError: @escaping (String) -> Void) {
         self.onMessage = onMessage
+        self.onLoadError = onLoadError
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -36,19 +30,31 @@ class TurnstileCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDelega
 
         switch type {
         case "token":
-            if let token = dict["token"] as? String {
-                onMessage(.token(token))
-            }
+            let token = dict["token"] as? String ?? ""
+            onMessage(token.isEmpty ? nil : token)
         case "expired":
-            onMessage(.expired)
+            onMessage(nil)
         case "error":
-            let msg = dict["message"] as? String ?? "验证失败"
-            onMessage(.error(msg))
+            onLoadError(dict["message"] as? String ?? "验证组件出错")
         case "ready":
-            onMessage(.token("")) // Signal ready (empty token)
+            // 脚本已加载，等待渲染
+            break
+        case "log":
+            // 调试日志（不显示给用户）
+            #if DEBUG
+            print("[Turnstile] \(dict["message"] ?? "")")
+            #endif
         default:
             break
         }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        onLoadError("页面加载失败: \(error.localizedDescription)")
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        onLoadError("资源加载失败: \(error.localizedDescription)")
     }
 }
 
@@ -56,19 +62,19 @@ class TurnstileCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDelega
 
 struct TurnstileWebView: UIViewRepresentable {
     let siteKey: String
+    let serverURL: String
     var onToken: (String?) -> Void
+    var onError: (String) -> Void
 
     func makeCoordinator() -> TurnstileCoordinator {
-        TurnstileCoordinator { msg in
-            switch msg {
-            case .token(let token):
-                onToken(token.isEmpty ? nil : token)
-            case .expired:
-                onToken(nil)
-            case .error:
-                onToken(nil)
+        TurnstileCoordinator(
+            onMessage: { token in
+                onToken(token)
+            },
+            onLoadError: { msg in
+                onError(msg)
             }
-        }
+        )
     }
 
     func makeUIView(context: Context) -> WKWebView {
@@ -77,6 +83,8 @@ struct TurnstileWebView: UIViewRepresentable {
         userContentController.add(context.coordinator, name: "turnstile")
         config.userContentController = userContentController
         config.websiteDataStore = WKWebsiteDataStore.default()
+        config.preferences.javaScriptEnabled = true
+        config.allowsInlineMediaPlayback = true
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
@@ -86,12 +94,13 @@ struct TurnstileWebView: UIViewRepresentable {
         webView.translatesAutoresizingMaskIntoConstraints = false
 
         let html = generateHTML(siteKey: siteKey)
-        webView.loadHTMLString(html, baseURL: URL(string: "https://challenges.cloudflare.com"))
+        // 使用面板服务器地址作为 baseURL，让 Turnstile 验证域名匹配
+        let baseURL = URL(string: serverURL.trimmingCharacters(in: .whitespacesAndNewlines)) ?? URL(string: "https://smsf.xiaoyyua.top")!
+        webView.loadHTMLString(html, baseURL: baseURL)
         return webView
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
-        // No update needed
     }
 
     private func generateHTML(siteKey: String) -> String {
@@ -111,41 +120,46 @@ struct TurnstileWebView: UIViewRepresentable {
                     overflow: hidden;
                     font-family: -apple-system, BlinkMacSystemFont, sans-serif;
                 }
-                .cf-turnstile {
-                    transform-origin: center;
-                }
+                #ts-container { transform-origin: center; }
             </style>
-            <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
         </head>
         <body>
-            <div class="cf-turnstile"
-                 data-sitekey="\(siteKey)"
-                 data-theme="light"
-                 data-callback="onTurnstileSuccess"
-                 data-expired-callback="onTurnstileExpired"
-                 data-error-callback="onTurnstileError"></div>
+            <div id="ts-container"></div>
             <script>
-                function onTurnstileSuccess(token) {
-                    window.webkit.messageHandlers.turnstile.postMessage({type: 'token', token: token});
-                }
-                function onTurnstileExpired() {
-                    window.webkit.messageHandlers.turnstile.postMessage({type: 'expired'});
-                }
-                function onTurnstileError() {
-                    window.webkit.messageHandlers.turnstile.postMessage({type: 'error', message: '验证组件出错'});
-                }
-                // Fallback: if Turnstile auto-renders, also check via API
-                window.addEventListener('load', function() {
-                    setTimeout(function() {
-                        if (window.turnstile && window.turnstile.getResponse) {
-                            var token = window.turnstile.getResponse();
-                            if (token) {
+                // 使用显式渲染，确保脚本加载完成后再渲染
+                function onTurnstileLoad() {
+                    window.webkit.messageHandlers.turnstile.postMessage({type: 'log', message: 'API loaded, rendering...'});
+                    try {
+                        turnstile.render('#ts-container', {
+                            sitekey: '\(siteKey)',
+                            theme: 'light',
+                            callback: function(token) {
                                 window.webkit.messageHandlers.turnstile.postMessage({type: 'token', token: token});
+                            },
+                            'expired-callback': function() {
+                                window.webkit.messageHandlers.turnstile.postMessage({type: 'expired'});
+                            },
+                            'error-callback': function(code) {
+                                window.webkit.messageHandlers.turnstile.postMessage({type: 'error', message: '验证失败: ' + code});
                             }
-                        }
-                    }, 3000);
-                });
+                        });
+                        window.webkit.messageHandlers.turnstile.postMessage({type: 'log', message: 'Render called'});
+                    } catch(e) {
+                        window.webkit.messageHandlers.turnstile.postMessage({type: 'error', message: '渲染异常: ' + e.message});
+                    }
+                }
+
+                // 超时检测：10 秒后仍未获取 token，报告错误
+                var tsTimeout = setTimeout(function() {
+                    if (!window.turnstile || !turnstile.getResponse || !turnstile.getResponse()) {
+                        window.webkit.messageHandlers.turnstile.postMessage({type: 'error', message: '验证组件加载超时'});
+                    }
+                }, 10000);
+
+                // 成功后清除超时
+                var origCallback = onTurnstileLoad;
             </script>
+            <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onTurnstileLoad" async defer></script>
         </body>
         </html>
         """
@@ -156,17 +170,30 @@ struct TurnstileWebView: UIViewRepresentable {
 
 struct TurnstileView: View {
     let siteKey: String
+    let serverURL: String
     @State private var token: String? = nil
     @State private var hasError: Bool = false
+    @State private var errorMessage: String = ""
+    @State private var reloadTrigger: Int = 0
     var onTokenChange: (String?) -> Void
 
     var body: some View {
         VStack(spacing: 8) {
-            TurnstileWebView(siteKey: siteKey) { newToken in
-                token = newToken
-                hasError = newToken == nil
-                onTokenChange(newToken)
-            }
+            TurnstileWebView(
+                siteKey: siteKey,
+                serverURL: serverURL,
+                onToken: { newToken in
+                    token = newToken
+                    hasError = newToken == nil && errorMessage.isEmpty
+                    onTokenChange(newToken)
+                },
+                onError: { msg in
+                    errorMessage = msg
+                    hasError = true
+                    onTokenChange(nil)
+                }
+            )
+            .id(reloadTrigger)
             .frame(height: 65)
             .frame(maxWidth: .infinity)
 
@@ -179,9 +206,19 @@ struct TurnstileView: View {
                         .foregroundStyle(.secondary)
                 }
             } else if hasError {
-                Text("验证组件加载失败，请刷新重试")
+                VStack(spacing: 4) {
+                    Text(errorMessage.isEmpty ? "验证组件加载失败" : errorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                    Button("重试") {
+                        errorMessage = ""
+                        hasError = false
+                        token = nil
+                        reloadTrigger += 1
+                    }
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .buttonStyle(.bordered)
+                }
             }
         }
     }

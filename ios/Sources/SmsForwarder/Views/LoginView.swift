@@ -185,6 +185,7 @@ struct LoginView: View {
                                 .foregroundStyle(.secondary)
                             TurnstileView(
                                 siteKey: vm.turnstileSiteKey,
+                                serverURL: vm.serverURL,
                                 onTokenChange: { token in
                                     vm.onTurnstileToken(token)
                                 }
