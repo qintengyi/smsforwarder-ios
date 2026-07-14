@@ -19,21 +19,27 @@ final class DashboardViewModel {
         isChecking = true
         defer { isChecking = false }
 
-        // 并行获取健康状态、配置和电量
-        async let healthResult: Bool = api.checkProxyHealth()
-        async let configResult: DeviceConfig = api.queryConfig()
-        async let batteryResult: BatteryInfo = api.queryBattery()
+        // 并行发起所有请求，各自独立捕获错误（类似 Promise.allSettled）
+        // 每个请求失败不影响其他请求的结果
+        async let healthTask = try? api.checkProxyHealth()
+        async let configTask = try? api.queryConfig()
+        async let batteryTask = try? api.queryBattery()
 
-        do {
-            let health = try await healthResult
-            isOnline = health
-            config = try await configResult
-            battery = try await batteryResult
-            // 顺带拉取定位
-            await fetchLocation()
-        } catch {
-            isOnline = false
-            errorMessage = error.localizedDescription
+        let healthResult = await healthTask
+        let configResult = await configTask
+        let batteryResult = await batteryTask
+
+        // 各自独立赋值，失败则保留旧值
+        isOnline = healthResult ?? false
+        if let cfg = configResult { config = cfg }
+        if let bat = batteryResult { battery = bat }
+
+        // 定位查询（内部已有独立错误处理）
+        await fetchLocation()
+
+        // 只有全部请求都失败时才提示错误
+        if healthResult == nil && configResult == nil && batteryResult == nil {
+            errorMessage = "无法连接设备，请检查网络连接或设备是否在线。"
             showError = true
         }
     }

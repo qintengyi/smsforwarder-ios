@@ -60,6 +60,32 @@ struct DeviceConfig: Codable {
         case uptime
         case createTime = "create_time"
     }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        deviceModel = try? c.decodeIfPresent(String.self, forKey: .deviceModel)
+        androidVersion = try? c.decodeIfPresent(String.self, forKey: .androidVersion)
+        appVersion = try? c.decodeIfPresent(String.self, forKey: .appVersion)
+        sim1State = try? c.decodeIfPresent(String.self, forKey: .sim1State)
+        sim2State = try? c.decodeIfPresent(String.self, forKey: .sim2State)
+        heartbeatInterval = c.decodeFlexibleInt(forKey: .heartbeatInterval)
+        batteryLevel = c.decodeFlexibleInt(forKey: .batteryLevel)
+        batteryStatus = try? c.decodeIfPresent(String.self, forKey: .batteryStatus)
+        locationAddress = try? c.decodeIfPresent(String.self, forKey: .locationAddress)
+        locationTime = c.decodeFlexibleInt64(forKey: .locationTime)
+        latitude = c.decodeFlexibleDouble(forKey: .latitude)
+        longitude = c.decodeFlexibleDouble(forKey: .longitude)
+        // forwardRules 可能是字符串数组，也可能是其他类型，用 try? 安全解码
+        forwardRules = try? c.decodeIfPresent([String].self, forKey: .forwardRules)
+        webhookUrl = try? c.decodeIfPresent(String.self, forKey: .webhookUrl)
+        pushToken = try? c.decodeIfPresent(String.self, forKey: .pushToken)
+        serverIp = try? c.decodeIfPresent(String.self, forKey: .serverIp)
+        serverPort = c.decodeFlexibleInt(forKey: .serverPort)
+        uptime = c.decodeFlexibleInt64(forKey: .uptime)
+        createTime = c.decodeFlexibleInt64(forKey: .createTime)
+    }
 }
 
 // MARK: - 短信记录

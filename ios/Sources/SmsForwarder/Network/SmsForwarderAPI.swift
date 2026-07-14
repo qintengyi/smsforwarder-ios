@@ -372,12 +372,77 @@ final class SmsForwarderAPI {
     }
 
     /// 检查设备在线状态（通过代理）
+    /// 该方法高度容错：设备 /health 端点返回格式可能多样，
+    /// 可能是标准 {code,msg,data:{online:true}}，也可能是简单 {online:true} 或 {status:"ok"}
     func checkProxyHealth() async throws -> Bool {
         struct HealthData: Decodable {
             let online: Bool?
+            let status: String?
         }
-        let resp: APIResponse<HealthData> = try await proxyCall(path: "/health", body: [:])
-        return resp.data?.online ?? false
+
+        guard let deviceId = deviceStore.currentDeviceId else {
+            throw APIError.noDeviceSelected
+        }
+
+        let url = try buildProxyURL(deviceId: deviceId, path: "/health")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 15 // 健康检查用较短超时
+        if let token = settingsStore.settings.token, !token.isEmpty {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        req.httpBody = try JSONSerialization.data(withJSONObject: [:], options: [])
+
+        let (rawData, response): (Data, URLResponse)
+        do {
+            (rawData, response) = try await session.data(for: req)
+        } catch {
+            // 网络错误（超时、无法连接等），视为离线
+            return false
+        }
+
+        guard let http = response as? HTTPURLResponse else { return false }
+        if http.statusCode == 401 { throw APIError.authRequired }
+        if !(200..<300).contains(http.statusCode) { return false }
+
+        // 1. 尝试标准 APIResponse<HealthData> 格式
+        if let resp = try? JSONDecoder().decode(APIResponse<HealthData>.self, from: rawData) {
+            if resp.code == 401 { throw APIError.authRequired }
+            if let online = resp.data?.online { return online }
+            if let status = resp.data?.status?.lowercased() {
+                return status == "ok" || status == "online" || status == "healthy"
+            }
+            // 请求成功且 code==200，视为在线
+            return resp.isSuccess
+        }
+
+        // 2. 尝试简单 JSON 对象格式 {online: true} 或 {status: "ok"}
+        if let jsonObj = try? JSONSerialization.jsonObject(with: rawData) as? [String: Any] {
+            // 检查是否有 code 字段（说明是 APIResponse 但 data 结构不同）
+            if let code = jsonObj["code"] as? Int {
+                if code == 401 { throw APIError.authRequired }
+                if code != 200 { return false }
+                // code==200，请求成功
+                if let dataObj = jsonObj["data"] as? [String: Any] {
+                    if let online = dataObj["online"] as? Bool { return online }
+                    if let status = dataObj["status"] as? String {
+                        return status.lowercased() == "ok" || status.lowercased() == "online"
+                    }
+                }
+                return true
+            }
+            // 无 code 字段的简单格式
+            if let online = jsonObj["online"] as? Bool { return online }
+            if let status = jsonObj["status"] as? String {
+                return status.lowercased() == "ok" || status.lowercased() == "online"
+            }
+            // 有 JSON 响应但格式未知，请求成功说明设备可达
+            return true
+        }
+
+        // 3. 无法解析 JSON，但 HTTP 200，保守返回 true
+        return true
     }
 
     /// 发送短信（通过代理）
