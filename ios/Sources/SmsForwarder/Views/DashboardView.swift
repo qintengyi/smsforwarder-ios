@@ -18,12 +18,18 @@ final class DashboardViewModel {
     func checkDeviceStatus() async {
         isChecking = true
         defer { isChecking = false }
+
+        // 并行获取健康状态、配置和电量
+        async let healthResult: Bool = api.checkProxyHealth()
+        async let configResult: DeviceConfig = api.queryConfig()
+        async let batteryResult: BatteryInfo = api.queryBattery()
+
         do {
-            let cfg = try await api.queryConfig()
-            config = cfg
-            isOnline = true
-            // 顺带拉取电量与定位概览
-            await fetchBattery()
+            let health = try await healthResult
+            isOnline = health
+            config = try await configResult
+            battery = try await batteryResult
+            // 顺带拉取定位
             await fetchLocation()
         } catch {
             isOnline = false
@@ -52,6 +58,7 @@ final class DashboardViewModel {
 // MARK: - 仪表盘视图
 
 struct DashboardView: View {
+    @Environment(AppStateManager.self) private var appState
     @State private var vm = DashboardViewModel()
     // 用于切换 ContentView 的 Tab
     @Binding var selectedTab: Int
@@ -59,28 +66,40 @@ struct DashboardView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 16) {
-                    // 设备状态卡片
-                    statusCard
+                if appState.deviceStore.hasDevices {
+                    VStack(spacing: 16) {
+                        // 设备选择器
+                        devicePickerCard
 
-                    // 电量概览
-                    batteryCard
+                        // 设备状态卡片
+                        statusCard
 
-                    // 定位概览
-                    locationCard
+                        // 电量概览
+                        batteryCard
 
-                    // 快捷功能入口
-                    quickActionsSection
+                        // 定位概览
+                        locationCard
+
+                        // 快捷功能入口
+                        quickActionsSection
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                } else {
+                    // 无设备状态
+                    noDeviceView
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
             }
             .navigationTitle("仪表盘")
             .navigationBarTitleDisplayMode(.large)
             .toolbarBackground(.bar, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .refreshable {
-                await vm.checkDeviceStatus()
+                if appState.deviceStore.hasDevices {
+                    await vm.checkDeviceStatus()
+                } else {
+                    try? await appState.deviceStore.fetch()
+                }
             }
             .alert("无法连接设备", isPresented: $vm.showError, actions: {
                 Button("好") {}
@@ -88,16 +107,40 @@ struct DashboardView: View {
                 Text(vm.errorMessage ?? "")
             })
             .onAppear {
-                Task {
-                    if !vm.isOnline && !vm.isChecking {
-                        await vm.checkDeviceStatus()
-                    }
+                if appState.deviceStore.hasDevices && !vm.isOnline && !vm.isChecking {
+                    Task { await vm.checkDeviceStatus() }
                 }
             }
         }
     }
 
     // MARK: - 子视图
+
+    private var devicePickerCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "iphone.gen3")
+                    .foregroundStyle(.blue)
+                Text("当前设备")
+                    .font(.headline)
+                Spacer()
+            }
+            Picker("选择设备", selection: Binding(
+                get: { appState.deviceStore.currentDeviceId ?? 0 },
+                set: { newId in
+                    appState.deviceStore.setCurrent(newId)
+                    vm.isOnline = false
+                    Task { await vm.checkDeviceStatus() }
+                }
+            )) {
+                ForEach(appState.deviceStore.devices) { device in
+                    Text(device.name).tag(device.id)
+                }
+            }
+            .pickerStyle(.menu)
+        }
+        .cardStyle()
+    }
 
     private var statusCard: some View {
         HStack(spacing: 16) {
@@ -246,6 +289,30 @@ struct DashboardView: View {
         .padding(.top, 8)
     }
 
+    private var noDeviceView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "iphone.slash")
+                .font(.system(size: 56))
+                .foregroundStyle(.secondary)
+            Text("暂无设备")
+                .font(.title3.bold())
+            Text("请在 Web 面板中添加 SmsForwarder 设备后下拉刷新。")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+            Button {
+                Task {
+                    try? await appState.deviceStore.fetch()
+                }
+            } label: {
+                Label("刷新设备列表", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(.top, 80)
+    }
+
     private func pluggedDisplay(_ plugged: String) -> String {
         switch plugged.lowercased() {
         case "ac": return "交流电源"
@@ -282,4 +349,5 @@ struct QuickActionItem: View {
 
 #Preview {
     DashboardView(selectedTab: .constant(0))
+        .environment(AppStateManager())
 }

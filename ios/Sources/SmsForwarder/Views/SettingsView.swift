@@ -27,7 +27,7 @@ final class SettingsViewModel {
         settings.serverURL = trimmed
         store.save(settings)
         alertTitle = "已保存"
-        alertMessage = "Web 面板地址已保存。"
+        alertMessage = "面板地址已保存。"
         showAlert = true
     }
 
@@ -39,9 +39,9 @@ final class SettingsViewModel {
         settings.serverURL = trimmed
         store.save(settings)
         do {
-            _ = try await api.queryConfig()
+            let devices = try await api.fetchDevices()
             alertTitle = "连接成功"
-            alertMessage = "Web 面板已响应，设备配置获取正常。"
+            alertMessage = "面板已响应，当前共有 \(devices.count) 台设备。"
             showAlert = true
         } catch {
             alertTitle = "连接失败"
@@ -51,7 +51,6 @@ final class SettingsViewModel {
     }
 
     func logout() {
-        store.clearLogin()
         appState?.logout()
     }
 }
@@ -70,9 +69,9 @@ struct SettingsView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
             } header: {
-                Text("Web 面板地址")
+                Text("面板地址")
             } footer: {
-                Text("填入 SmsForwarder Web 控制面板的完整地址。")
+                Text("填入 SmsForwarder 控制面板的完整地址。")
             }
 
             Section {
@@ -123,7 +122,7 @@ struct SettingsView: View {
             }
 
             Section {
-                Text("iOS App 通过 Web 面板的 JSON API 获取数据，登录后自动携带认证 token。面板内部管理 SmsForwarder 设备的 IP、端口和签名密钥。")
+                Text("iOS App 通过控制面板的 JSON API 获取数据。面板管理多台 SmsForwarder 设备，登录后可在仪表盘切换设备。所有数据请求通过面板代理转发到设备。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } header: {

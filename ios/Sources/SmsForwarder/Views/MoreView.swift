@@ -3,10 +3,45 @@ import SwiftUI
 // MARK: - 更多视图
 
 struct MoreView: View {
+    @Environment(AppStateManager.self) private var appState
+
     var body: some View {
         NavigationStack {
             List {
-                Section("设备") {
+                // 当前设备信息
+                Section("当前设备") {
+                    if let device = appState.deviceStore.current {
+                        HStack {
+                            Image(systemName: "iphone.gen3")
+                                .foregroundStyle(.blue)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(device.name)
+                                    .font(.body)
+                                if let remark = device.remark, !remark.isEmpty {
+                                    Text(remark)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Text("ID: \(device.id)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("未选择设备")
+                            .foregroundStyle(.secondary)
+                    }
+                    Button {
+                        Task {
+                            try? await appState.deviceStore.fetch()
+                        }
+                    } label: {
+                        Label("刷新设备列表", systemImage: "arrow.clockwise")
+                    }
+                }
+
+                Section("设备功能") {
                     NavigationLink {
                         BatteryView()
                     } label: {
@@ -76,4 +111,5 @@ private struct MoreRow: View {
 
 #Preview {
     MoreView()
+        .environment(AppStateManager())
 }

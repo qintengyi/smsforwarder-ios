@@ -3,6 +3,7 @@ import Observation
 
 /// TabView 主容器（底部 5 个 Tab）
 struct ContentView: View {
+    @Environment(AppStateManager.self) private var appState
     @State private var selectedTab: Int = 0
 
     var body: some View {
@@ -38,9 +39,16 @@ struct ContentView: View {
                 .tag(4)
         }
         .tint(.blue)
+        .task {
+            // 确保设备列表已加载
+            if !appState.deviceStore.isLoaded {
+                try? await appState.deviceStore.fetch()
+            }
+        }
     }
 }
 
 #Preview {
     ContentView()
+        .environment(AppStateManager())
 }

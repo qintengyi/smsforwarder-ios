@@ -5,19 +5,31 @@ import Observation
 @Observable
 final class AppStateManager {
     var isLoggedIn: Bool
+    var deviceStore: DeviceStore
 
     private let store = SettingsStore.shared
 
     init() {
-        isLoggedIn = store.settings.isLoggedIn
+        let ds = DeviceStore.shared
+        ds.restoreFromStorage()
+        self.deviceStore = ds
+        self.isLoggedIn = store.settings.isLoggedIn
     }
 
     func refreshAuthState() {
         isLoggedIn = store.settings.isLoggedIn
     }
 
+    /// 登录成功后初始化设备列表
+    func onLoginSuccess() async {
+        refreshAuthState()
+        deviceStore.restoreFromStorage()
+        try? await deviceStore.fetch()
+    }
+
     func logout() {
         store.clearLogin()
+        deviceStore.clear()
         isLoggedIn = false
     }
 }
@@ -36,7 +48,6 @@ struct SmsForwarderApp: App {
                 LoginView()
                     .environment(appState)
                     .onAppear {
-                        // 每次 LoginView 出现时刷新状态（处理从设置页退出登录后返回的情况）
                         appState.refreshAuthState()
                     }
             }

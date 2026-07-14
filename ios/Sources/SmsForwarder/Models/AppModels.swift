@@ -106,11 +106,13 @@ struct AppSettings: Codable, Equatable {
     var serverURL: String
     var token: String?       // 登录认证 token，nil 表示未登录
     var username: String?    // 记住上次登录用户名
+    var currentDeviceId: Int? // 当前选中的设备 ID（Go 面板多设备）
 
     static let `default` = AppSettings(
         serverURL: "https://smsf.xiaoyyua.top",
         token: nil,
-        username: nil
+        username: nil,
+        currentDeviceId: nil
     )
 
     var isLoggedIn: Bool {

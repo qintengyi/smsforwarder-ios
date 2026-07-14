@@ -11,11 +11,12 @@ enum APIError: LocalizedError {
     case businessError(code: Int, message: String?)
     case emptyData
     case authRequired
+    case noDeviceSelected
 
     var errorDescription: String? {
         switch self {
         case .invalidURL:
-            return "Web 面板地址无效，请在设置中检查服务器地址。"
+            return "面板地址无效，请在设置中检查服务器地址。"
         case .invalidResponse:
             return "服务器响应格式异常。"
         case .httpError(let code):
@@ -28,44 +29,41 @@ enum APIError: LocalizedError {
             return "服务器未返回数据。"
         case .authRequired:
             return "登录已过期，请重新登录。"
+        case .noDeviceSelected:
+            return "请先在设备管理中选择一台设备。"
         }
     }
 }
 
 // MARK: - SmsForwarderAPI
 
-/// Web 面板 API 网络层
-/// 通过 Flask 面板的 JSON API 获取数据，不再直接连设备
+/// Go 面板 API 网络层
+/// 通过 Go 面板的 JSON API 获取数据，面板内部代理转发到 SmsForwarder 设备
 final class SmsForwarderAPI {
     static let shared = SmsForwarderAPI()
 
     private let session: URLSession
     private let settingsStore: SettingsStore
+    private let deviceStore: DeviceStore
 
-    init(session: URLSession = .shared, settingsStore: SettingsStore = .shared) {
+    init(session: URLSession = .shared, settingsStore: SettingsStore = .shared, deviceStore: DeviceStore = .shared) {
         self.session = session
         self.settingsStore = settingsStore
+        self.deviceStore = deviceStore
     }
 
     // MARK: - URL 构建
 
-    /// 构建 Flask API 的完整 URL
-    /// - Parameters:
-    ///   - path: API 路径，如 "config"（会拼接为 /api/config）
-    ///   - queryItems: URL 查询参数
-    /// - Returns: 构建好的 URL
-    private func buildURL(path: String, queryItems: [URLQueryItem] = []) throws -> URL {
+    /// 构建面板 API URL（如 /api/auth/login, /api/devices）
+    private func buildAPIURL(path: String, queryItems: [URLQueryItem] = []) throws -> URL {
         let settings = settingsStore.settings
         guard !settings.serverURL.isEmpty else {
             throw APIError.invalidURL
         }
 
         var components = URLComponents(string: settings.serverURL)
-        // 规范化路径：去掉尾部斜杠，避免拼接出 //api/xxx
         var basePath = components?.path ?? ""
-        if basePath.hasSuffix("/") {
-            basePath.removeLast()
-        }
+        if basePath.hasSuffix("/") { basePath.removeLast() }
         components?.path = basePath + "/api/\(path)"
         if !queryItems.isEmpty {
             components?.queryItems = queryItems
@@ -77,49 +75,53 @@ final class SmsForwarderAPI {
         return url
     }
 
+    /// 构建设备代理 URL（如 /api/device/1/proxy/sms/query）
+    private func buildProxyURL(deviceId: Int, path: String) throws -> URL {
+        let settings = settingsStore.settings
+        guard !settings.serverURL.isEmpty else {
+            throw APIError.invalidURL
+        }
+
+        var components = URLComponents(string: settings.serverURL)
+        var basePath = components?.path ?? ""
+        if basePath.hasSuffix("/") { basePath.removeLast() }
+        // path 形如 "/sms/query"，直接拼接
+        let proxyPath = path.hasPrefix("/") ? path : "/" + path
+        components?.path = basePath + "/api/device/\(deviceId)/proxy\(proxyPath)"
+
+        guard let url = components?.url else {
+            throw APIError.invalidURL
+        }
+        return url
+    }
+
     // MARK: - 统一请求
 
-    /// 统一 GET 请求封装
-    /// - Parameters:
-    ///   - path: API 路径，如 "config"（会拼接为 /api/config）
-    ///   - queryItems: URL 查询参数
-    /// - Returns: 解码后的 APIResponse<T>
+    /// 面板 API GET 请求
     func get<T: Decodable>(path: String, queryItems: [URLQueryItem] = []) async throws -> APIResponse<T> {
-        let url = try buildURL(path: path, queryItems: queryItems)
-
+        let url = try buildAPIURL(path: path, queryItems: queryItems)
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
         req.timeoutInterval = 15
-
         return try await perform(req)
     }
 
-    /// 统一 POST 请求封装
-    /// - Parameters:
-    ///   - path: API 路径，如 "sms/send"（会拼接为 /api/sms/send）
-    ///   - body: 请求体参数
-    /// - Returns: 解码后的 APIResponse<T>
+    /// 面板 API POST 请求
     func post<T: Decodable>(path: String, body: [String: Any] = [:]) async throws -> APIResponse<T> {
-        let url = try buildURL(path: path)
-
+        let url = try buildAPIURL(path: path)
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = 15
-
-        do {
+        if !body.isEmpty {
             req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
-        } catch {
-            throw APIError.decodeError("请求体序列化失败：\(error.localizedDescription)")
         }
-
         return try await perform(req)
     }
 
-    /// 执行请求并解码响应（自动附加认证 header）
+    /// 执行面板 API 请求（自动附加认证 header）
     private func perform<T: Decodable>(_ req: URLRequest) async throws -> APIResponse<T> {
         var req = req
-        // 附加认证 token
         if let token = settingsStore.settings.token, !token.isEmpty {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -131,13 +133,68 @@ final class SmsForwarderAPI {
             throw APIError.invalidResponse
         }
 
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw APIError.httpError(http.statusCode)
+        if let http = response as? HTTPURLResponse {
+            if http.statusCode == 401 {
+                throw APIError.authRequired
+            }
+            if !(200..<300).contains(http.statusCode) {
+                throw APIError.httpError(http.statusCode)
+            }
         }
 
         do {
             let decoded = try JSONDecoder().decode(APIResponse<T>.self, from: rawData)
-            // 检查是否需要重新登录
+            if decoded.code == 401 {
+                throw APIError.authRequired
+            }
+            return decoded
+        } catch let err as APIError {
+            throw err
+        } catch {
+            throw APIError.decodeError(error.localizedDescription)
+        }
+    }
+
+    // MARK: - 设备代理调用
+
+    /// 通过面板代理调用设备 API
+    /// - Parameters:
+    ///   - path: 设备 API 路径，如 "/sms/query"
+    ///   - body: 请求参数
+    /// - Returns: 解码后的 APIResponse<T>
+    func proxyCall<T: Decodable>(path: String, body: [String: Any] = [:]) async throws -> APIResponse<T> {
+        guard let deviceId = deviceStore.currentDeviceId else {
+            throw APIError.noDeviceSelected
+        }
+
+        let url = try buildProxyURL(deviceId: deviceId, path: path)
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 30 // 代理调用可能较慢
+        if let token = settingsStore.settings.token, !token.isEmpty {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
+
+        let (rawData, response): (Data, URLResponse)
+        do {
+            (rawData, response) = try await session.data(for: req)
+        } catch {
+            throw APIError.invalidResponse
+        }
+
+        if let http = response as? HTTPURLResponse {
+            if http.statusCode == 401 {
+                throw APIError.authRequired
+            }
+            if !(200..<300).contains(http.statusCode) {
+                throw APIError.httpError(http.statusCode)
+            }
+        }
+
+        do {
+            let decoded = try JSONDecoder().decode(APIResponse<T>.self, from: rawData)
             if decoded.code == 401 {
                 throw APIError.authRequired
             }
@@ -152,184 +209,35 @@ final class SmsForwarderAPI {
         }
     }
 
-    // MARK: - 登录
-
-    /// 登录认证
-    /// - Parameters:
-    ///   - username: 用户名
-    ///   - password: 密码
-    ///   - serverURL: 面板地址（登录时可能尚未保存，需临时传入）
-    /// - Returns: 登录成功后的 token
-    func login(username: String, password: String, serverURL: String) async throws -> String {
-        guard !serverURL.isEmpty else {
-            throw APIError.invalidURL
+    /// 代理调用并返回列表数据（兼容 data 为数组或 {list: [...]} 的情况）
+    private func proxyFetchList<T: Decodable>(path: String, body: [String: Any] = [:]) async throws -> [T] {
+        guard let deviceId = deviceStore.currentDeviceId else {
+            throw APIError.noDeviceSelected
         }
 
-        var components = URLComponents(string: serverURL)
-        var basePath = components?.path ?? ""
-        if basePath.hasSuffix("/") { basePath.removeLast() }
-        components?.path = basePath + "/api/login"
-
-        guard let url = components?.url else {
-            throw APIError.invalidURL
-        }
-
+        let url = try buildProxyURL(deviceId: deviceId, path: path)
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
-        req.timeoutInterval = 15
-
-        let body: [String: Any] = [
-            "username": username,
-            "password": password
-        ]
+        req.timeoutInterval = 30
+        if let token = settingsStore.settings.token, !token.isEmpty {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
 
         let (rawData, response) = try await session.data(for: req)
 
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw APIError.httpError(http.statusCode)
-        }
-
-        struct LoginData: Decodable {
-            let token: String
-            let username: String?
-        }
-
-        let decoded = try JSONDecoder().decode(APIResponse<LoginData>.self, from: rawData)
-        if !decoded.isSuccess {
-            throw APIError.businessError(code: decoded.code, message: decoded.msg)
-        }
-        guard let token = decoded.data?.token, !token.isEmpty else {
-            throw APIError.decodeError("登录响应中缺少 token")
-        }
-        return token
-    }
-
-    // MARK: - 业务方法
-
-    /// 查询设备配置
-    func queryConfig() async throws -> DeviceConfig {
-        let resp: APIResponse<DeviceConfig> = try await get(path: "config")
-        return resp.data ?? DeviceConfig()
-    }
-
-    /// 发送短信
-    /// - Parameters:
-    ///   - simSlot: 1=SIM1, 2=SIM2
-    ///   - phoneNumbers: 多号码分号分隔
-    ///   - msgContent: 短信内容
-    func sendSMS(simSlot: Int, phoneNumbers: String, msgContent: String) async throws -> String {
-        struct EmptyResult: Decodable {}
-        let body: [String: Any] = [
-            "sim_slot": simSlot,
-            "phone_numbers": phoneNumbers,
-            "msg_content": msgContent
-        ]
-        let resp: APIResponse<EmptyResult> = try await post(path: "sms/send", body: body)
-        return resp.msg ?? "发送成功"
-    }
-
-    /// 查询短信列表
-    /// - Parameters:
-    ///   - type: 1=接收, 2=发送
-    ///   - pageNum: 页码
-    ///   - pageSize: 每页数量
-    ///   - keyword: 关键字
-    func querySMS(type: Int, pageNum: Int, pageSize: Int, keyword: String) async throws -> [SmsRecord] {
-        let queryItems: [URLQueryItem] = [
-            URLQueryItem(name: "type", value: String(type)),
-            URLQueryItem(name: "page_num", value: String(pageNum)),
-            URLQueryItem(name: "page_size", value: String(pageSize)),
-            URLQueryItem(name: "keyword", value: keyword)
-        ]
-        return try await fetchList(path: "sms", queryItems: queryItems)
-    }
-
-    /// 查询通话列表
-    /// - Parameters:
-    ///   - type: 0=全部, 1=呼入, 2=呼出, 3=未接
-    ///   - phoneNumber: 号码
-    ///   - pageNum: 页码
-    ///   - pageSize: 每页数量
-    func queryCalls(type: Int, phoneNumber: String, pageNum: Int, pageSize: Int) async throws -> [CallRecord] {
-        let queryItems: [URLQueryItem] = [
-            URLQueryItem(name: "type", value: String(type)),
-            URLQueryItem(name: "page_num", value: String(pageNum)),
-            URLQueryItem(name: "page_size", value: String(pageSize)),
-            URLQueryItem(name: "phone_number", value: phoneNumber)
-        ]
-        return try await fetchList(path: "calls", queryItems: queryItems)
-    }
-
-    /// 查询联系人
-    func queryContacts(phoneNumber: String, name: String) async throws -> [Contact] {
-        let queryItems: [URLQueryItem] = [
-            URLQueryItem(name: "phone_number", value: phoneNumber),
-            URLQueryItem(name: "name", value: name)
-        ]
-        return try await fetchList(path: "contacts", queryItems: queryItems)
-    }
-
-    /// 添加联系人
-    func addContact(phoneNumber: String, name: String) async throws -> String {
-        struct EmptyResult: Decodable {}
-        let body: [String: Any] = [
-            "phone_number": phoneNumber,
-            "name": name
-        ]
-        let resp: APIResponse<EmptyResult> = try await post(path: "contacts/add", body: body)
-        return resp.msg ?? "添加成功"
-    }
-
-    /// 查询电量
-    func queryBattery() async throws -> BatteryInfo {
-        let resp: APIResponse<BatteryInfo> = try await get(path: "battery")
-        return resp.data ?? BatteryInfo(level: nil, status: nil, health: nil, plugged: nil, voltage: nil, temperature: nil)
-    }
-
-    /// 远程唤醒 (Wake-On-LAN)
-    func sendWOL(mac: String, ip: String, port: Int) async throws -> String {
-        struct EmptyResult: Decodable {}
-        let body: [String: Any] = [
-            "mac": mac,
-            "ip": ip,
-            "port": port
-        ]
-        let resp: APIResponse<EmptyResult> = try await post(path: "wol", body: body)
-        return resp.msg ?? "唤醒指令已发送"
-    }
-
-    /// 查询定位
-    func queryLocation() async throws -> LocationInfo {
-        let resp: APIResponse<LocationInfo> = try await get(path: "location")
-        return resp.data ?? LocationInfo(address: nil, latitude: nil, longitude: nil, time: nil, provider: nil)
-    }
-
-    // MARK: - 列表通用解析
-
-    /// 后端可能以 data 字段直接返回数组，也可能包在 { "data": { "list": [...] } } 中。
-    /// 此方法优先按数组解析，失败再尝试 list 字段解析，最后尝试空 data 兜底。
-    private func fetchList<T: Decodable>(path: String, queryItems: [URLQueryItem]) async throws -> [T] {
-        let url = try buildURL(path: path, queryItems: queryItems)
-
-        var req = URLRequest(url: url)
-        req.httpMethod = "GET"
-        req.timeoutInterval = 15
-        // 附加认证 token
-        if let token = settingsStore.settings.token, !token.isEmpty {
-            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-
-        let (rawData, response) = try await session.data(for: req)
-
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw APIError.httpError(http.statusCode)
+        if let http = response as? HTTPURLResponse {
+            if http.statusCode == 401 {
+                throw APIError.authRequired
+            }
+            if !(200..<300).contains(http.statusCode) {
+                throw APIError.httpError(http.statusCode)
+            }
         }
 
         // 先尝试直接解析 APIResponse<[T]>
         if let arrResp = try? JSONDecoder().decode(APIResponse<[T]>.self, from: rawData) {
-            // 检查是否需要重新登录
             if arrResp.code == 401 {
                 throw APIError.authRequired
             }
@@ -349,7 +257,208 @@ final class SmsForwarderAPI {
             return list
         }
 
-        // 最终兜底：返回空数组
         return []
     }
+
+    // MARK: - 认证
+
+    /// 获取 Turnstile 配置
+    func fetchTurnstileConfig(serverURL: String) async throws -> TurnstileConfig {
+        guard !serverURL.isEmpty else { throw APIError.invalidURL }
+
+        var components = URLComponents(string: serverURL)
+        var basePath = components?.path ?? ""
+        if basePath.hasSuffix("/") { basePath.removeLast() }
+        components?.path = basePath + "/api/auth/turnstile"
+
+        guard let url = components?.url else { throw APIError.invalidURL }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.timeoutInterval = 10
+
+        let (rawData, response) = try await session.data(for: req)
+
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw APIError.httpError(http.statusCode)
+        }
+
+        let decoded = try JSONDecoder().decode(APIResponse<TurnstileConfig>.self, from: rawData)
+        return decoded.data ?? TurnstileConfig(enabled: false, siteKey: "")
+    }
+
+    /// 登录认证
+    /// - Parameters:
+    ///   - username: 用户名
+    ///   - password: 密码
+    ///   - turnstileToken: Turnstile 人机验证 token（如启用）
+    ///   - serverURL: 面板地址
+    /// - Returns: 登录成功后的 token
+    func login(username: String, password: String, turnstileToken: String, serverURL: String) async throws -> String {
+        guard !serverURL.isEmpty else { throw APIError.invalidURL }
+
+        var components = URLComponents(string: serverURL)
+        var basePath = components?.path ?? ""
+        if basePath.hasSuffix("/") { basePath.removeLast() }
+        components?.path = basePath + "/api/auth/login"
+
+        guard let url = components?.url else { throw APIError.invalidURL }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 15
+
+        let body: [String: Any] = [
+            "username": username,
+            "password": password,
+            "turnstile_token": turnstileToken
+        ]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
+
+        let (rawData, response) = try await session.data(for: req)
+
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            // 尝试解析错误消息
+            if let errorResp = try? JSONDecoder().decode(APIResponse<EmptyData>.self, from: rawData) {
+                throw APIError.businessError(code: errorResp.code, message: errorResp.msg)
+            }
+            throw APIError.httpError(http.statusCode)
+        }
+
+        struct LoginData: Decodable {
+            let token: String
+            let id: Int?
+            let username: String?
+            let remark: String?
+        }
+
+        let decoded = try JSONDecoder().decode(APIResponse<LoginData>.self, from: rawData)
+        if !decoded.isSuccess {
+            throw APIError.businessError(code: decoded.code, message: decoded.msg)
+        }
+        guard let token = decoded.data?.token, !token.isEmpty else {
+            throw APIError.decodeError("登录响应中缺少 token")
+        }
+        return token
+    }
+
+    /// 获取用户信息
+    func fetchProfile() async throws -> UserProfile {
+        let resp: APIResponse<UserProfile> = try await get(path: "auth/profile")
+        return resp.data ?? UserProfile(id: nil, username: nil, remark: nil)
+    }
+
+    // MARK: - 设备管理
+
+    /// 获取设备列表
+    func fetchDevices() async throws -> [Device] {
+        let resp: APIResponse<[Device]> = try await get(path: "devices")
+        return resp.data ?? []
+    }
+
+    /// 检查设备健康状态（面板级别）
+    func checkDeviceHealth(deviceId: Int) async throws -> DeviceHealth {
+        let resp: APIResponse<DeviceHealth> = try await get(path: "device/\(deviceId)/health")
+        return resp.data ?? DeviceHealth(online: false, duration_ms: 0)
+    }
+
+    // MARK: - 设备代理业务方法
+
+    /// 查询设备配置（通过代理）
+    func queryConfig() async throws -> DeviceConfig {
+        let resp: APIResponse<DeviceConfig> = try await proxyCall(path: "/config/query", body: [:])
+        return resp.data ?? DeviceConfig()
+    }
+
+    /// 检查设备在线状态（通过代理）
+    func checkProxyHealth() async throws -> Bool {
+        struct HealthData: Decodable {
+            let online: Bool?
+        }
+        let resp: APIResponse<HealthData> = try await proxyCall(path: "/health", body: [:])
+        return resp.data?.online ?? false
+    }
+
+    /// 发送短信（通过代理）
+    func sendSMS(simSlot: Int, phoneNumbers: String, msgContent: String) async throws -> String {
+        struct EmptyResult: Decodable {}
+        let body: [String: Any] = [
+            "sim_slot": simSlot,
+            "phone_numbers": phoneNumbers,
+            "msg_content": msgContent
+        ]
+        let resp: APIResponse<EmptyResult> = try await proxyCall(path: "/sms/send", body: body)
+        return resp.msg ?? "发送成功"
+    }
+
+    /// 查询短信列表（通过代理）
+    func querySMS(type: Int, pageNum: Int, pageSize: Int, keyword: String) async throws -> [SmsRecord] {
+        let body: [String: Any] = [
+            "type": type,
+            "page_num": pageNum,
+            "page_size": pageSize,
+            "keyword": keyword
+        ]
+        return try await proxyFetchList(path: "/sms/query", body: body)
+    }
+
+    /// 查询通话列表（通过代理）
+    func queryCalls(type: Int, phoneNumber: String, pageNum: Int, pageSize: Int) async throws -> [CallRecord] {
+        let body: [String: Any] = [
+            "type": type,
+            "phone_number": phoneNumber,
+            "page_num": pageNum,
+            "page_size": pageSize
+        ]
+        return try await proxyFetchList(path: "/call/query", body: body)
+    }
+
+    /// 查询联系人（通过代理）
+    func queryContacts(phoneNumber: String, name: String) async throws -> [Contact] {
+        let body: [String: Any] = [
+            "phone_number": phoneNumber,
+            "name": name
+        ]
+        return try await proxyFetchList(path: "/contact/query", body: body)
+    }
+
+    /// 添加联系人（通过代理）
+    func addContact(phoneNumber: String, name: String) async throws -> String {
+        struct EmptyResult: Decodable {}
+        let body: [String: Any] = [
+            "phone_number": phoneNumber,
+            "name": name
+        ]
+        let resp: APIResponse<EmptyResult> = try await proxyCall(path: "/contact/add", body: body)
+        return resp.msg ?? "添加成功"
+    }
+
+    /// 查询电量（通过代理）
+    func queryBattery() async throws -> BatteryInfo {
+        let resp: APIResponse<BatteryInfo> = try await proxyCall(path: "/battery/query", body: [:])
+        return resp.data ?? BatteryInfo(level: nil, status: nil, health: nil, plugged: nil, voltage: nil, temperature: nil)
+    }
+
+    /// 远程唤醒（通过代理）
+    func sendWOL(mac: String, ip: String, port: Int) async throws -> String {
+        struct EmptyResult: Decodable {}
+        let body: [String: Any] = [
+            "mac": mac,
+            "ip": ip,
+            "port": port
+        ]
+        let resp: APIResponse<EmptyResult> = try await proxyCall(path: "/wol/send", body: body)
+        return resp.msg ?? "唤醒指令已发送"
+    }
+
+    /// 查询定位（通过代理）
+    func queryLocation() async throws -> LocationInfo {
+        let resp: APIResponse<LocationInfo> = try await proxyCall(path: "/location/query", body: [:])
+        return resp.data ?? LocationInfo(address: nil, latitude: nil, longitude: nil, time: nil, provider: nil)
+    }
 }
+
+// MARK: - 空数据类型
+
+struct EmptyData: Decodable {}

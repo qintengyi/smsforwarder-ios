@@ -12,6 +12,13 @@ final class LoginViewModel {
     var errorMessage: String?
     var showError: Bool = false
 
+    // Turnstile 状态
+    var turnstileEnabled: Bool = false
+    var turnstileSiteKey: String = ""
+    var turnstileToken: String? = nil
+    var isCheckingTurnstile: Bool = false
+    var turnstileError: String? = nil
+
     private let store = SettingsStore.shared
     private let api = SmsForwarderAPI.shared
     var appState: AppStateManager?
@@ -26,7 +33,33 @@ final class LoginViewModel {
         !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         !password.isEmpty &&
         !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        !isLoggingIn
+        !isLoggingIn &&
+        (!turnstileEnabled || (turnstileToken != nil && !(turnstileToken?.isEmpty ?? true)))
+    }
+
+    /// 检查 Turnstile 配置
+    func checkTurnstile() async {
+        let trimmedURL = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedURL.isEmpty else { return }
+
+        isCheckingTurnstile = true
+        turnstileError = nil
+        turnstileEnabled = false
+        turnstileToken = nil
+
+        do {
+            let config = try await api.fetchTurnstileConfig(serverURL: trimmedURL)
+            turnstileEnabled = config.enabled
+            turnstileSiteKey = config.siteKey
+        } catch {
+            // 如果无法获取 Turnstile 配置，不阻止登录（可能面板未启用）
+            turnstileEnabled = false
+        }
+        isCheckingTurnstile = false
+    }
+
+    func onTurnstileToken(_ token: String?) {
+        turnstileToken = token
     }
 
     func login() async {
@@ -41,15 +74,27 @@ final class LoginViewModel {
         settings.serverURL = trimmedURL
         store.save(settings)
 
+        // 如果 Turnstile 启用但未完成验证
+        if turnstileEnabled && (turnstileToken == nil || turnstileToken?.isEmpty ?? true) {
+            errorMessage = "请先完成人机验证"
+            showError = true
+            return
+        }
+
         do {
             let token = try await api.login(
                 username: trimmedUser,
                 password: password,
+                turnstileToken: turnstileToken ?? "",
                 serverURL: trimmedURL
             )
             store.saveLogin(token: token, username: trimmedUser)
             password = ""
-            appState?.refreshAuthState()
+            turnstileToken = nil
+            await appState?.onLoginSuccess()
+        } catch let err as APIError {
+            errorMessage = err.errorDescription ?? "登录失败"
+            showError = true
         } catch {
             errorMessage = error.localizedDescription
             showError = true
@@ -124,6 +169,30 @@ struct LoginView: View {
                     }
                     .padding(.horizontal, 4)
 
+                    // Turnstile 人机验证
+                    if vm.isCheckingTurnstile {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .scaleEffect(0.7)
+                            Text("正在检查人机验证配置…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if vm.turnstileEnabled && !vm.turnstileSiteKey.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("人机验证")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            TurnstileView(
+                                siteKey: vm.turnstileSiteKey,
+                                onTokenChange: { token in
+                                    vm.onTurnstileToken(token)
+                                }
+                            )
+                        }
+                        .padding(.horizontal, 4)
+                    }
+
                     // 登录按钮
                     Button {
                         Task { await vm.login() }
@@ -159,6 +228,12 @@ struct LoginView: View {
             })
             .onAppear {
                 vm.appState = appState
+                Task { await vm.checkTurnstile() }
+            }
+            .onChange(of: vm.serverURL) { _, _ in
+                // 服务器地址变化时重新检查 Turnstile
+                vm.turnstileEnabled = false
+                vm.turnstileToken = nil
             }
         }
     }
