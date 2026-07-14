@@ -10,9 +10,11 @@ final class SettingsViewModel {
     var showAlert: Bool = false
     var alertTitle: String = ""
     var alertMessage: String = ""
+    var showLogoutConfirm: Bool = false
 
     private let store = SettingsStore.shared
     private let api = SmsForwarderAPI.shared
+    var appState: AppStateManager?
 
     init() {
         let settings = store.settings
@@ -21,7 +23,9 @@ final class SettingsViewModel {
 
     func save() {
         let trimmed = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        store.save(AppSettings(serverURL: trimmed))
+        var settings = store.settings
+        settings.serverURL = trimmed
+        store.save(settings)
         alertTitle = "已保存"
         alertMessage = "Web 面板地址已保存。"
         showAlert = true
@@ -31,7 +35,9 @@ final class SettingsViewModel {
         isTesting = true
         defer { isTesting = false }
         let trimmed = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        store.save(AppSettings(serverURL: trimmed))
+        var settings = store.settings
+        settings.serverURL = trimmed
+        store.save(settings)
         do {
             _ = try await api.queryConfig()
             alertTitle = "连接成功"
@@ -43,24 +49,30 @@ final class SettingsViewModel {
             showAlert = true
         }
     }
+
+    func logout() {
+        store.clearLogin()
+        appState?.logout()
+    }
 }
 
 // MARK: - 设置视图
 
 struct SettingsView: View {
+    @Environment(AppStateManager.self) private var appState
     @State private var vm = SettingsViewModel()
 
     var body: some View {
         Form {
             Section {
-                TextField("http://192.168.1.100:5001", text: $vm.serverURL)
+                TextField("https://smsf.xiaoyyua.top", text: $vm.serverURL)
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
             } header: {
                 Text("Web 面板地址")
             } footer: {
-                Text("填入 SmsForwarder Web 控制面板的完整地址（含端口号）。iPhone 需与面板所在服务器网络互通。")
+                Text("填入 SmsForwarder Web 控制面板的完整地址。")
             }
 
             Section {
@@ -87,7 +99,31 @@ struct SettingsView: View {
             }
 
             Section {
-                Text("iOS App 通过 Web 面板的 JSON API 获取数据，面板内部管理 SmsForwarder 设备的 IP、端口和签名密钥。无需在手机端逐台配置设备。")
+                if let username = SettingsStore.shared.settings.username {
+                    HStack {
+                        Image(systemName: "person.circle.fill")
+                            .foregroundStyle(.blue)
+                        Text(username)
+                            .font(.body)
+                        Spacer()
+                        Text("已登录")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                }
+
+                Button(role: .destructive) {
+                    vm.showLogoutConfirm = true
+                } label: {
+                    Label("退出登录", systemImage: "rectangle.portrait.and.arrow.right")
+                        .frame(maxWidth: .infinity)
+                }
+            } header: {
+                Text("账号")
+            }
+
+            Section {
+                Text("iOS App 通过 Web 面板的 JSON API 获取数据，登录后自动携带认证 token。面板内部管理 SmsForwarder 设备的 IP、端口和签名密钥。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } header: {
@@ -105,11 +141,23 @@ struct SettingsView: View {
         }, message: {
             Text(vm.alertMessage)
         })
+        .alert("退出登录", isPresented: $vm.showLogoutConfirm, actions: {
+            Button("取消", role: .cancel) {}
+            Button("退出", role: .destructive) {
+                vm.logout()
+            }
+        }, message: {
+            Text("退出后将返回登录页面，需要重新输入用户名和密码。")
+        })
+        .onAppear {
+            vm.appState = appState
+        }
     }
 }
 
 #Preview {
     NavigationStack {
         SettingsView()
+            .environment(AppStateManager())
     }
 }

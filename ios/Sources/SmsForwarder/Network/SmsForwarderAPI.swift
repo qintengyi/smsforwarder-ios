@@ -10,6 +10,7 @@ enum APIError: LocalizedError {
     case decodeError(String)
     case businessError(code: Int, message: String?)
     case emptyData
+    case authRequired
 
     var errorDescription: String? {
         switch self {
@@ -25,6 +26,8 @@ enum APIError: LocalizedError {
             return message ?? "业务错误（code=\(code)）"
         case .emptyData:
             return "服务器未返回数据。"
+        case .authRequired:
+            return "登录已过期，请重新登录。"
         }
     }
 }
@@ -113,8 +116,14 @@ final class SmsForwarderAPI {
         return try await perform(req)
     }
 
-    /// 执行请求并解码响应
+    /// 执行请求并解码响应（自动附加认证 header）
     private func perform<T: Decodable>(_ req: URLRequest) async throws -> APIResponse<T> {
+        var req = req
+        // 附加认证 token
+        if let token = settingsStore.settings.token, !token.isEmpty {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+
         let (rawData, response): (Data, URLResponse)
         do {
             (rawData, response) = try await session.data(for: req)
@@ -128,6 +137,10 @@ final class SmsForwarderAPI {
 
         do {
             let decoded = try JSONDecoder().decode(APIResponse<T>.self, from: rawData)
+            // 检查是否需要重新登录
+            if decoded.code == 401 {
+                throw APIError.authRequired
+            }
             if !decoded.isSuccess {
                 throw APIError.businessError(code: decoded.code, message: decoded.msg)
             }
@@ -137,6 +150,60 @@ final class SmsForwarderAPI {
         } catch {
             throw APIError.decodeError(error.localizedDescription)
         }
+    }
+
+    // MARK: - 登录
+
+    /// 登录认证
+    /// - Parameters:
+    ///   - username: 用户名
+    ///   - password: 密码
+    ///   - serverURL: 面板地址（登录时可能尚未保存，需临时传入）
+    /// - Returns: 登录成功后的 token
+    func login(username: String, password: String, serverURL: String) async throws -> String {
+        guard !serverURL.isEmpty else {
+            throw APIError.invalidURL
+        }
+
+        var components = URLComponents(string: serverURL)
+        var basePath = components?.path ?? ""
+        if basePath.hasSuffix("/") { basePath.removeLast() }
+        components?.path = basePath + "/api/login"
+
+        guard let url = components?.url else {
+            throw APIError.invalidURL
+        }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 15
+
+        let body: [String: Any] = [
+            "username": username,
+            "password": password
+        ]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
+
+        let (rawData, response) = try await session.data(for: req)
+
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw APIError.httpError(http.statusCode)
+        }
+
+        struct LoginData: Decodable {
+            let token: String
+            let username: String?
+        }
+
+        let decoded = try JSONDecoder().decode(APIResponse<LoginData>.self, from: rawData)
+        if !decoded.isSuccess {
+            throw APIError.businessError(code: decoded.code, message: decoded.msg)
+        }
+        guard let token = decoded.data?.token, !token.isEmpty else {
+            throw APIError.decodeError("登录响应中缺少 token")
+        }
+        return token
     }
 
     // MARK: - 业务方法
@@ -249,6 +316,10 @@ final class SmsForwarderAPI {
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
         req.timeoutInterval = 15
+        // 附加认证 token
+        if let token = settingsStore.settings.token, !token.isEmpty {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
 
         let (rawData, response) = try await session.data(for: req)
 
@@ -258,6 +329,10 @@ final class SmsForwarderAPI {
 
         // 先尝试直接解析 APIResponse<[T]>
         if let arrResp = try? JSONDecoder().decode(APIResponse<[T]>.self, from: rawData) {
+            // 检查是否需要重新登录
+            if arrResp.code == 401 {
+                throw APIError.authRequired
+            }
             if !arrResp.isSuccess {
                 throw APIError.businessError(code: arrResp.code, message: arrResp.msg)
             }

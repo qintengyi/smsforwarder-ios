@@ -101,18 +101,27 @@ extension KeyedDecodingContainer {
 // MARK: - 应用设置模型
 
 /// 设置页使用的本地配置（持久化到 UserDefaults）
-/// 只需一个 Web 面板地址，Flask 面板内部管理设备 IP/端口/密钥
+/// 只需一个 Web 面板地址 + 登录 token，Flask 面板内部管理设备 IP/端口/密钥
 struct AppSettings: Codable, Equatable {
     var serverURL: String
+    var token: String?       // 登录认证 token，nil 表示未登录
+    var username: String?    // 记住上次登录用户名
 
     static let `default` = AppSettings(
-        serverURL: "http://192.168.1.100:5001"
+        serverURL: "https://smsf.xiaoyyua.top",
+        token: nil,
+        username: nil
     )
+
+    var isLoggedIn: Bool {
+        guard let token = token, !token.isEmpty else { return false }
+        return true
+    }
 }
 
 // MARK: - 本地配置管理
 
-/// 管理设备连接配置（IP/端口/密钥），持久化到 UserDefaults
+/// 管理面板连接配置和登录状态，持久化到 UserDefaults
 final class SettingsStore {
     static let shared = SettingsStore()
     private let key = "io.smsforwarder.settings"
@@ -139,5 +148,20 @@ final class SettingsStore {
 
     func save(_ settings: AppSettings) {
         self.settings = settings
+    }
+
+    /// 保存登录 token
+    func saveLogin(token: String, username: String) {
+        var s = settings
+        s.token = token
+        s.username = username
+        save(s)
+    }
+
+    /// 清除登录状态（退出登录）
+    func clearLogin() {
+        var s = settings
+        s.token = nil
+        save(s)
     }
 }
