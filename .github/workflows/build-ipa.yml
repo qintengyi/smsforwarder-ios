@@ -1,0 +1,70 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode (use latest 16.x)
+        run: |
+          # macos-15 默认带 Xcode 16.x，挑选实际存在的最新 Xcode
+          LATEST=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          echo "Selecting $LATEST"
+          sudo xcode-select -s "$LATEST"
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: List schemes (debug)
+        working-directory: ios
+        run: xcodebuild -list
+
+      - name: Build Release app (unsigned)
+        working-directory: ios
+        run: |
+          xcodebuild \
+            -project SmsForwarder.xcodeproj \
+            -scheme SmsForwarder \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            -derivedDataPath build \
+            build
+
+      - name: Package IPA
+        working-directory: ios
+        run: |
+          APP_PATH=$(find build/Build/Products/Release-iphoneos -name "SmsForwarder.app" -type d | head -1)
+          echo "Found app at: $APP_PATH"
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -qr SmsForwarder.ipa Payload
+          ls -lh SmsForwarder.ipa
+          unzip -l SmsForwarder.ipa | head -20
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmsForwarder-unsigned-ipa
+          path: ios/SmsForwarder.ipa
+          retention-days: 30
+          if-no-files-found: error
