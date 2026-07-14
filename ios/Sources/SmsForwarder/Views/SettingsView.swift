@@ -67,7 +67,7 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("设备地址") {
+            Section {
                 TextField("设备 IP", text: $vm.deviceIP)
                     .keyboardType(.numbersAndPunctuation)
                     .textInputAutocapitalization(.never)
@@ -77,14 +77,18 @@ struct SettingsView: View {
                     set: { vm.devicePort = Int($0) ?? vm.devicePort }
                 ))
                     .keyboardType(.numberPad)
+            } header: {
+                Text("设备地址")
             } footer: {
                 Text("默认地址为 192.168.1.16:5000，请确保 iPhone 与 SmsForwarder 设备在同一局域网。")
             }
 
-            Section("安全密钥") {
+            Section {
                 SecureField("Secret Key", text: $vm.secretKey)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+            } header: {
+                Text("安全密钥")
             } footer: {
                 Text("该密钥用于生成 HMAC-SHA256 签名，需要与 SmsForwarder 服务端配置一致。")
             }
