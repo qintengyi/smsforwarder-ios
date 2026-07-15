@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card border-primary">
+            <div class="card-header bg-primary text-white text-center">
+                <h5 class="card-title mb-0"><i class="bi bi-battery-full"></i> 电池状态</h5>
+            </div>
+            <div class="card-body">
+                <div class="text-center mb-4">
+                    <div class="battery-container">
+                        <div class="battery-level" id="battery-level">
+                            {{ battery.level or '未知' }}
+                        </div>
+                    </div>
+                    <p class="mt-2"><strong>当前电量: {{ battery.level or '未知' }}</strong></p>
+                </div>
+                
+                <div class="row mb-3">
+                    <div class="col-6"><strong>状态:</strong></div>
+                    <div class="col-6">{{ battery.status or '未知' }}</div>
+                </div>
+                <div class="row mb-3">
+                    <div class="col-6"><strong>健康度:</strong></div>
+                    <div class="col-6">{{ battery.health or '未知' }}</div>
+                </div>
+                <div class="row mb-3">
+                    <div class="col-6"><strong>充电器:</strong></div>
+                    <div class="col-6">{{ battery.plugged or '未知' }}</div>
+                </div>
+                <div class="row mb-3">
+                    <div class="col-6"><strong>电压:</strong></div>
+                    <div class="col-6">{{ battery.voltage or '未知' }}</div>
+                </div>
+                <div class="row">
+                    <div class="col-6"><strong>温度:</strong></div>
+                    <div class="col-6">{{ battery.temperature or '未知' }}</div>
+                </div>
+                
+                <div class="text-center mt-4">
+                    <button class="btn btn-primary" onclick="refreshBattery()">
+                        <i class="bi bi-arrow-clockwise"></i> 刷新电量
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if not battery or not battery.level %}
+<div class="alert alert-warning mt-4">
+    <i class="bi bi-exclamation-triangle"></i> 无法获取电池信息，请确保设备连接正常且SmsForwarder已启用电池查询功能。
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+function refreshBattery() {
+    $.get('/api/battery', function(data) {
+        if (data.code === 200 && data.data) {
+            const battery = data.data;
+            const batteryLevelElement = document.getElementById('battery-level');
+            
+            // 更新电池显示文本
+            batteryLevelElement.textContent = battery.level || '未知';
+            
+            // 更新电池高度
+            if (battery.level && battery.level !== '未知') {
+                const level = parseInt(battery.level.replace('%', ''));
+                if (!isNaN(level)) {
+                    batteryLevelElement.style.height = level + '%';
+                    batteryLevelElement.style.background = level > 20 ? 
+                        'linear-gradient(to top, #2ecc71, #27ae60)' : 
+                        'linear-gradient(to top, #e74c3c, #c0392b)';
+                }
+            }
+            
+            // 更新其他电池信息
+            document.querySelector('.card-body div:contains("状态:") + div').textContent = battery.status || '未知';
+            document.querySelector('.card-body div:contains("健康度:") + div').textContent = battery.health || '未知';
+            document.querySelector('.card-body div:contains("充电器:") + div').textContent = battery.plugged || '未知';
+            document.querySelector('.card-body div:contains("电压:") + div').textContent = battery.voltage || '未知';
+            document.querySelector('.card-body div:contains("温度:") + div').textContent = battery.temperature || '未知';
+            
+            document.querySelector('strong:contains("当前电量:") + span').textContent = battery.level || '未知';
+            
+            // 移除警告信息
+            document.querySelector('.alert-warning')?.remove();
+        } else {
+            alert('刷新电量失败: ' + (data.msg || '未知错误'));
+        }
+    }).fail(function() {
+        alert('网络请求失败');
+    });
+}
+
+// 页面加载时初始化电池显示
+document.addEventListener('DOMContentLoaded', function() {
+    const batteryLevelElement = document.getElementById('battery-level');
+    const batteryText = batteryLevelElement.textContent.trim();
+    
+    if (batteryText && batteryText !== '未知') {
+        const level = parseInt(batteryText.replace('%', ''));
+        if (!isNaN(level)) {
+            batteryLevelElement.style.height = level + '%';
+            batteryLevelElement.style.background = level > 20 ? 
+                'linear-gradient(to top, #2ecc71, #27ae60)' : 
+                'linear-gradient(to top, #e74c3c, #c0392b)';
+        }
+    }
+});
+
+// 辅助函数：查找包含特定文本的元素
+function findElementByText(root, text) {
+    const elements = root.getElementsByTagName('*');
+    for (let i = 0; i < elements.length; i++) {
+        if (elements[i].textContent.includes(text)) {
+            return elements[i];
+        }
+    }
+    return null;
+}
+</script>
+<style>
+.battery-container {
+    width: 80px;
+    height: 150px;
+    border: 3px solid #3498db;
+    border-radius: 5px;
+    margin: 0 auto 20px;
+    overflow: hidden;
+    position: relative;
+    background-color: #f8f9fa;
+}
+
+.battery-level {
+    width: 100%;
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+    transition: height 0.5s ease;
+    background: linear-gradient(to top, #2ecc71, #27ae60);
+}
+</style>
+{% endblock %}

@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-md-12">
+        <div class="card border-success">
+            <div class="card-header bg-success text-white">
+                <h5 class="card-title mb-0"><i class="bi bi-telephone"></i> 查询通话记录</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('calls') }}">
+                    <div class="mb-3">
+                        <label class="form-label"><i class="bi bi-funnel"></i> 通话类型</label>
+                        <select class="form-select" name="call_type">
+                            <option value="0" selected>全部</option>
+                            <option value="1">呼入</option>
+                            <option value="2">呼出</option>
+                            <option value="3">未接</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label"><i class="bi bi-telephone"></i> 手机号码</label>
+                        <input type="text" class="form-control" name="phone_number" placeholder="模糊匹配手机号码">
+                    </div>
+                    
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label"><i class="bi bi-list-number"></i> 页码</label>
+                            <input type="number" class="form-control" name="page_num" value="1" min="1">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label"><i class="bi bi-qr-code"></i> 每页数量</label>
+                            <input type="number" class="form-control" name="page_size" value="10" min="1" max="50">
+                        </div>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-success w-100">
+                        <i class="bi bi-search"></i> 查询通话记录
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if call_list and call_list|length > 0 %}
+<div class="card mt-4">
+    <div class="card-header bg-info text-white">
+        <h5 class="card-title mb-0"><i class="bi bi-list"></i> 通话记录列表</h5>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th><i class="bi bi-person"></i> 联系人</th>
+                        <th><i class="bi bi-telephone"></i> 号码</th>
+                        <th><i class="bi bi-clock"></i> 时间</th>
+                        <th><i class="bi bi-hourglass-split"></i> 时长(秒)</th>
+                        <th><i class="bi bi-telephone-forward"></i> 类型</th>
+                        <th><i class="bi bi-sim"></i> SIM卡</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for call in call_list %}
+                    <tr>
+                        <td>{{ call.name or '未知联系人' }}</td>
+                        <td>{{ call.number }}</td>
+                        <td>{{ call.dateLong|timestamp_to_datetime }}</td>
+                        <td>{{ call.duration }}</td>
+                        <td>
+                            {% if call.type == 1 %}
+                                <span class="badge bg-primary">呼入</span>
+                            {% elif call.type == 2 %}
+                                <span class="badge bg-success">呼出</span>
+                            {% elif call.type == 3 %}
+                                <span class="badge bg-danger">未接</span>
+                            {% else %}
+                                <span class="badge bg-secondary">未知</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if call.sim_id == 0 %}
+                                <span class="badge bg-primary">SIM1</span>
+                            {% elif call.sim_id == 1 %}
+                                <span class="badge bg-success">SIM2</span>
+                            {% else %}
+                                <span class="badge bg-secondary">未知</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% elif call_list is not none %}
+<div class="alert alert-info mt-4">
+    <i class="bi bi-info-circle"></i> 没有找到相关的通话记录。
+</div>
+{% endif %}
+{% endblock %}

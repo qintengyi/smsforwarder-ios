@@ -32,9 +32,9 @@ final class KeepAliveManager: NSObject, CLLocationManagerDelegate {
     /// 后台剩余时间（供调试面板查看）
     var bgTimeRemaining: TimeInterval = 0
 
-    private let lm = CLLocationManager()
-    private var bgTaskId: UIBackgroundTaskIdentifier = 0
-    private var bgTaskTimer: Timer?
+    @ObservationIgnored private let lm = CLLocationManager()
+    @ObservationIgnored private var bgTaskId: UIBackgroundTaskIdentifier = UIBackgroundTaskInvalid
+    @ObservationIgnored private var bgTaskTimer: Timer?
 
     override init() {
         super.init()
@@ -100,9 +100,9 @@ final class KeepAliveManager: NSObject, CLLocationManagerDelegate {
     /// iOS 给约 30 秒后台时间，每 5 秒刷新一次确保不超时
     private func requestMoreBackgroundTime() {
         // 先结束旧任务
-        if bgTaskId != 0 {
+        if bgTaskId != UIBackgroundTaskInvalid {
             UIApplication.shared.endBackgroundTask(bgTaskId)
-            bgTaskId = 0
+            bgTaskId = UIBackgroundTaskInvalid
         }
 
         bgTimeRemaining = UIApplication.shared.backgroundTimeRemaining
@@ -115,18 +115,18 @@ final class KeepAliveManager: NSObject, CLLocationManagerDelegate {
 
     private func handleBgTaskExpired() {
         print("[KeepAlive] background task expired, requesting more")
-        if bgTaskId != 0 {
+        if bgTaskId != UIBackgroundTaskInvalid {
             UIApplication.shared.endBackgroundTask(bgTaskId)
-            bgTaskId = 0
+            bgTaskId = UIBackgroundTaskInvalid
         }
         // 尝试请求更多时间
         requestMoreBackgroundTime()
     }
 
     private func endBgTask() {
-        if bgTaskId != 0 {
+        if bgTaskId != UIBackgroundTaskInvalid {
             UIApplication.shared.endBackgroundTask(bgTaskId)
-            bgTaskId = 0
+            bgTaskId = UIBackgroundTaskInvalid
         }
     }
 

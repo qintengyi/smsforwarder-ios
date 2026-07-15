@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card border-primary">
+            <div class="card-header bg-primary text-white">
+                <h5 class="card-title mb-0"><i class="bi bi-gear"></i> 设备状态</h5>
+            </div>
+            <div class="card-body text-center">
+                <div class="mb-4">
+                    <i class="bi bi-phone" style="font-size: 3rem; color: #007bff;"></i>
+                </div>
+                <h4 class="text-primary mb-3">设备连接状态</h4>
+                <div class="d-flex justify-content-center">
+                    <span class="badge bg-success fs-5 p-2">
+                        <i class="bi bi-check-circle me-2"></i>在线
+                    </span>
+                </div>
+                <p class="text-muted mt-3 mb-0">
+                    <small>设备已成功连接到SMS转发器服务</small>
+                </p>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card border-success">
+            <div class="card-header bg-success text-white">
+                <h5 class="card-title mb-0"><i class="bi bi-battery-full"></i> 电池状态</h5>
+            </div>
+            <div class="card-body">
+                <div class="text-center mb-4">
+                    <div class="battery-container">
+                        <div class="battery-level" id="battery-level">
+                            {{ battery.data.level if battery and battery.data and battery.data.level else '未知' }}
+                        </div>
+                    </div>
+                    <p class="mt-2"><strong>当前电量: {{ battery.data.level if battery and battery.data and battery.data.level else '未知' }}</strong></p>
+                </div>
+                
+                {% if battery and battery.data %}
+                    <div class="row mb-3">
+                        <div class="col-6"><strong>状态:</strong></div>
+                        <div class="col-6">{{ battery.data.status or '未知' }}</div>
+                    </div>
+                    <div class="row mb-3">
+                        <div class="col-6"><strong>健康度:</strong></div>
+                        <div class="col-6">{{ battery.data.health or '未知' }}</div>
+                    </div>
+                    <div class="row mb-3">
+                        <div class="col-6"><strong>充电器:</strong></div>
+                        <div class="col-6">{{ battery.data.plugged or '未知' }}</div>
+                    </div>
+                    <div class="row mb-3">
+                        <div class="col-6"><strong>电压:</strong></div>
+                        <div class="col-6">{{ battery.data.voltage or '未知' }}</div>
+                    </div>
+                    <div class="row">
+                        <div class="col-6"><strong>温度:</strong></div>
+                        <div class="col-6">{{ battery.data.temperature or '未知' }}</div>
+                    </div>
+                {% else %}
+                    <div class="alert alert-warning">
+                        <i class="bi bi-exclamation-triangle"></i> 无法获取电池信息
+                    </div>
+                {% endif %}
+                
+                <div class="text-center mt-3">
+                    <button class="btn btn-sm btn-success" onclick="refreshBattery()">
+                        <i class="bi bi-arrow-clockwise"></i> 刷新电量
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-4 mb-4">
+        <div class="card border-info h-100">
+            <div class="card-header bg-info text-white text-center">
+                <h5 class="card-title mb-0"><i class="bi bi-geo-alt"></i> 设备定位</h5>
+            </div>
+            <div class="card-body text-center">
+                <div class="mb-3">
+                    <i class="bi bi-geo-alt" style="font-size: 3rem; color: #17a2b8;"></i>
+                </div>
+                <p class="text-muted mb-2">当前定位状态</p>
+                {% if location and location.data and location.data.latitude %}
+                    <h4 class="text-primary">已定位</h4>
+                    <p class="mb-0 text-truncate" title="{{ location.data.address }}">{{ location.data.address|truncate(20) }}</p>
+                {% else %}
+                    <h4 class="text-secondary">未定位</h4>
+                    <p class="mb-0 text-muted">暂无定位信息</p>
+                {% endif %}
+            </div>
+            <div class="card-footer text-center">
+                <a href="{{ url_for('location') }}" class="btn btn-sm btn-info">
+                    <i class="bi bi-arrow-right"></i> 查看详情
+                </a>
+                <button class="btn btn-sm btn-outline-info ms-2" onclick="refreshLocation()">
+                    <i class="bi bi-arrow-clockwise"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4 mb-4">
+        <div class="card border-warning h-100">
+            <div class="card-header bg-warning text-white text-center">
+                <h5 class="card-title mb-0"><i class="bi bi-envelope"></i> 短信管理</h5>
+            </div>
+            <div class="card-body text-center">
+                <div class="mb-3">
+                    <i class="bi bi-envelope" style="font-size: 3rem; color: #ffc107;"></i>
+                </div>
+                <p class="text-muted mb-2">短信功能</p>
+                <h4 class="text-warning">发送/查询</h4>
+                <p class="mb-0">管理短信记录和发送新短信</p>
+            </div>
+            <div class="card-footer text-center">
+                <a href="{{ url_for('sms') }}" class="btn btn-sm btn-warning">
+                    <i class="bi bi-arrow-right"></i> 进入管理
+                </a>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4 mb-4">
+        <div class="card border-danger h-100">
+            <div class="card-header bg-danger text-white text-center">
+                <h5 class="card-title mb-0"><i class="bi bi-pc-display"></i> 远程唤醒</h5>
+            </div>
+            <div class="card-body text-center">
+                <div class="mb-3">
+                    <i class="bi bi-pc-display" style="font-size: 3rem; color: #dc3545;"></i>
+                </div>
+                <p class="text-muted mb-2">WOL功能</p>
+                <h4 class="text-danger">局域网唤醒</h4>
+                <p class="mb-0">远程唤醒局域网设备</p>
+            </div>
+            <div class="card-footer text-center">
+                <a href="{{ url_for('wol') }}" class="btn btn-sm btn-danger">
+                    <i class="bi bi-arrow-right"></i> 使用WOL
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function refreshBattery() {
+    fetch('/api/battery')
+        .then(response => response.json())
+        .then(data => {
+            if (data.code === 200 && data.data) {
+                const battery = data.data;
+                const batteryLevelElement = document.getElementById('battery-level');
+                
+                if (batteryLevelElement) {
+                    batteryLevelElement.textContent = battery.level || '未知';
+                    
+                    if (battery.level && battery.level !== '未知') {
+                        const level = parseInt(battery.level.replace('%', ''));
+                        if (!isNaN(level)) {
+                            batteryLevelElement.style.height = level + '%';
+                            batteryLevelElement.style.background = level > 20 ? 
+                                'linear-gradient(to top, #2ecc71, #27ae60)' : 
+                                'linear-gradient(to top, #e74c3c, #c0392b)';
+                        }
+                    }
+                }
+            } else {
+                alert('刷新电量失败: ' + (data.msg || '未知错误'));
+            }
+        })
+        .catch(error => {
+            alert('网络请求失败: ' + error.message);
+        });
+}
+
+function refreshLocation() {
+    fetch('/api/location')
+        .then(response => response.json())
+        .then(data => {
+            if (data.code === 200 && data.data) {
+                window.location.reload();
+            } else {
+                alert('刷新定位失败: ' + (data.msg || '未知错误'));
+            }
+        })
+        .catch(error => {
+            alert('网络请求失败: ' + error.message);
+        });
+}
+</script>
+{% endblock %}

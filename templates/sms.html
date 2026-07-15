@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card border-primary">
+            <div class="card-header bg-primary text-white">
+                <h5 class="card-title mb-0"><i class="bi bi-send"></i> 发送短信</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('sms') }}">
+                    <input type="hidden" name="action" value="send">
+                    
+                    <div class="mb-3">
+                        <label class="form-label"><i class="bi bi-sim"></i> 选择SIM卡</label>
+                        <select class="form-select" name="sim_slot" required>
+                            <option value="1" {% if config.enable_api_sms_send and (config.sim_info_list|length > 0) %}selected{% endif %}>SIM1 - {{ config.extra_sim1 or 'SIM1' }}</option>
+                            <option value="2" {% if config.enable_api_sms_send and (config.sim_info_list|length > 1) %}selected{% endif %}>SIM2 - {{ config.extra_sim2 or 'SIM2' }}</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label"><i class="bi bi-telephone"></i> 接收号码</label>
+                        <input type="text" class="form-control" name="phone_numbers" placeholder="多个号码用分号(;)分隔" required>
+                        <div class="form-text">例如：13800138000;13900139000</div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label"><i class="bi bi-chat-left-text"></i> 短信内容</label>
+                        <textarea class="form-control" name="msg_content" rows="4" placeholder="请输入短信内容" required></textarea>
+                        <div class="form-text">最多390个字符（6条短信）</div>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary w-100">
+                        <i class="bi bi-send"></i> 发送短信
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card border-success">
+            <div class="card-header bg-success text-white">
+                <h5 class="card-title mb-0"><i class="bi bi-search"></i> 查询短信</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('sms') }}">
+                    <input type="hidden" name="action" value="query">
+                    
+                    <div class="mb-3">
+                        <label class="form-label"><i class="bi bi-funnel"></i> 短信类型</label>
+                        <select class="form-select" name="sms_type">
+                            <option value="1" selected>接收的短信</option>
+                            <option value="2">发送的短信</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label"><i class="bi bi-keyword"></i> 关键字</label>
+                        <input type="text" class="form-control" name="keyword" placeholder="模糊匹配短信内容">
+                    </div>
+                    
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label"><i class="bi bi-list-number"></i> 页码</label>
+                            <input type="number" class="form-control" name="page_num" value="1" min="1">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label"><i class="bi bi-qr-code"></i> 每页数量</label>
+                            <input type="number" class="form-control" name="page_size" value="10" min="1" max="50">
+                        </div>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-success w-100">
+                        <i class="bi bi-search"></i> 查询短信
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if sms_list and sms_list|length > 0 %}
+<div class="card mt-4">
+    <div class="card-header bg-info text-white">
+        <h5 class="card-title mb-0"><i class="bi bi-list"></i> 短信列表</h5>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th><i class="bi bi-person"></i> 联系人</th>
+                        <th><i class="bi bi-telephone"></i> 号码</th>
+                        <th><i class="bi bi-chat-left-text"></i> 内容</th>
+                        <th><i class="bi bi-clock"></i> 时间</th>
+                        <th><i class="bi bi-sim"></i> SIM卡</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for sms in sms_list %}
+                    <tr>
+                        <td>{{ sms.name or '未知联系人' }}</td>
+                        <td>{{ sms.number }}</td>
+                        <td>{{ sms.content|truncate(50) }}</td>
+                        <td>{{ sms.date|timestamp_to_datetime }}</td>
+                        <td>
+                            {% if sms.sim_id == 0 %}
+                                <span class="badge bg-primary">SIM1</span>
+                            {% elif sms.sim_id == 1 %}
+                                <span class="badge bg-success">SIM2</span>
+                            {% else %}
+                                <span class="badge bg-secondary">未知</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% elif sms_list is not none %}
+<div class="alert alert-info mt-4">
+    <i class="bi bi-info-circle"></i> 没有找到相关的短信记录。
+</div>
+{% endif %}
+{% endblock %}

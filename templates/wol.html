@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card border-primary">
+            <div class="card-header bg-primary text-white text-center">
+                <h5 class="card-title mb-0"><i class="bi bi-pc-display"></i> 远程唤醒 (WOL)</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('wol') }}">
+                    <div class="mb-3">
+                        <label class="form-label"><i class="bi bi-macbook"></i> MAC地址</label>
+                        <input type="text" class="form-control" name="mac" placeholder="格式: 24:5E:BE:0C:45:9A 或 24-5E-BE-0C-45-9A" required>
+                        <div class="form-text">
+                            请输入要唤醒设备的MAC地址，支持:和-分隔符
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label"><i class="bi bi-ip"></i> 内网IP地址 (可选)</label>
+                        <input type="text" class="form-control" name="ip" placeholder="例如: 192.168.1.100">
+                        <div class="form-text">
+                            如果不知道目标设备IP，可以留空
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label"><i class="bi bi-usb-plug"></i> 端口号 (可选)</label>
+                        <input type="number" class="form-control" name="port" value="9" min="1" max="65535">
+                        <div class="form-text">
+                            默认使用9端口，通常不需要修改
+                        </div>
+                    </div>
+                    
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary btn-lg">
+                            <i class="bi bi-pc-display-horizontal"></i> 发送WOL包
+                        </button>
+                    </div>
+                </form>
+                
+                <div class="mt-4 p-3 bg-light rounded">
+                    <h6 class="mb-2"><i class="bi bi-info-circle"></i> 使用说明</h6>
+                    <ul class="small">
+                        <li>确保目标设备支持WOL功能并在BIOS中已启用</li>
+                        <li>目标设备必须连接到同一局域网</li>
+                        <li>如果目标设备有静态IP，建议填写IP地址</li>
+                        <li>通常使用默认端口9即可</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -191,8 +191,8 @@ final class LiveActivityManager {
         // 创建新活动显示 pending 验证码
         do {
             let attributes = CodeActivityAttributes(ruleId: pending.rule.id)
-            let activity = try Activity.request(attributes: attributes, content: content, pushType: nil)
-            lastUpdatePath = "pending→request"
+                let _ = try Activity.request(attributes: attributes, content: content, pushType: nil)
+                lastUpdatePath = "pending→request"
             lastDebugLog = "[\(timeStr())] 补显示: \(pending.projectName) \(pending.code)"
             scheduleEndActivity(minutes: minutes)
         } catch {

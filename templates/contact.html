@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card border-primary">
+            <div class="card-header bg-primary text-white">
+                <h5 class="card-title mb-0"><i class="bi bi-person-plus"></i> 添加联系人</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('contacts') }}">
+                    <input type="hidden" name="action" value="add">
+                    
+                    <div class="mb-3">
+                        <label class="form-label"><i class="bi bi-telephone"></i> 手机号码</label>
+                        <input type="text" class="form-control" name="phone_number" placeholder="多个号码用分号(;)分隔" required>
+                        <div class="form-text">例如：13800138000;13900139000</div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label"><i class="bi bi-person"></i> 姓名</label>
+                        <input type="text" class="form-control" name="name" placeholder="可选，不填则使用号码">
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary w-100">
+                        <i class="bi bi-person-plus"></i> 添加联系人
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card border-success">
+            <div class="card-header bg-success text-white">
+                <h5 class="card-title mb-0"><i class="bi bi-search"></i> 查询联系人</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('contacts') }}">
+                    <input type="hidden" name="action" value="query">
+                    
+                    <div class="mb-3">
+                        <label class="form-label"><i class="bi bi-telephone"></i> 手机号码</label>
+                        <input type="text" class="form-control" name="phone_number" placeholder="模糊匹配手机号码">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label"><i class="bi bi-person"></i> 姓名</label>
+                        <input type="text" class="form-control" name="name" placeholder="模糊匹配姓名">
+                    </div>
+                    
+                    <button type="submit" class="btn btn-success w-100">
+                        <i class="bi bi-search"></i> 查询联系人
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if contact_list and contact_list|length > 0 %}
+<div class="card mt-4">
+    <div class="card-header bg-info text-white">
+        <h5 class="card-title mb-0"><i class="bi bi-list"></i> 联系人列表</h5>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th><i class="bi bi-person"></i> 姓名</th>
+                        <th><i class="bi bi-telephone"></i> 手机号码</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for contact in contact_list %}
+                    <tr>
+                        <td>{{ contact.name or '未命名' }}</td>
+                        <td>{{ contact.phone_number }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% elif contact_list is not none %}
+<div class="alert alert-info mt-4">
+    <i class="bi bi-info-circle"></i> 没有找到相关的联系人。
+</div>
+{% endif %}
+{% endblock %}
