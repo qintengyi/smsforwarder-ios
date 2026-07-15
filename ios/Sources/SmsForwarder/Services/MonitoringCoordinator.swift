@@ -46,20 +46,21 @@ final class MonitoringCoordinator {
         }
     }
 
-    /// App 进入后台：断开 WS（iOS 后台会强制中断），保持 audio 保活
+    /// App 进入后台：保持 WS 连接，依赖 audio 后台保活维持 App 运行
+    /// KeepAliveManager 播放静音音频让 App 不被挂起，WS 连接持续有效
+    /// 如果 WS 被系统意外中断，reconnect 机制会自动重连
     func onBackground() {
         isBackground = true
-        print("[Monitor] onBackground: disconnecting WS, keeping audio alive")
-        ws.stop()  // 主动断开，避免系统 abort 错误暴露给用户
+        print("[Monitor] onBackground: keeping WS alive via audio background mode")
+        // 不主动断开 WS
     }
 
-    /// App 回到前台：立即重连 WS
+    /// App 回到前台：兜底检查 WS 连接，如果后台断开且未自动重连成功则重连
     func onForeground() {
         guard isBackground else { return }
         isBackground = false
-        print("[Monitor] onForeground: reconnecting WS")
-        // 只在监听开关开启且已登录时重连
-        if enabled && SettingsStore.shared.settings.isLoggedIn {
+        print("[Monitor] onForeground: checking WS connection, isConnected=\(ws.isConnected)")
+        if enabled && SettingsStore.shared.settings.isLoggedIn && !ws.isConnected {
             ws.start()
         }
     }

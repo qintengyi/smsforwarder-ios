@@ -12,12 +12,14 @@ final class KeepAliveManager {
     var isKeepingAlive: Bool = false
 
     private var audioPlayer: AVAudioPlayer?
+    private var wasInterrupted: Bool = false
 
     func start() {
         guard !isKeepingAlive else { return }
         configureAudioSession()
         guard playSilence() else { return }
         isKeepingAlive = true
+        registerInterruptionObserver()
     }
 
     func stop() {
@@ -25,6 +27,7 @@ final class KeepAliveManager {
         audioPlayer = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         isKeepingAlive = false
+        unregisterInterruptionObserver()
     }
 
     private func configureAudioSession() {
@@ -53,6 +56,48 @@ final class KeepAliveManager {
         let data = Self.silenceWavData(seconds: 1)
         try? data.write(to: url)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    // MARK: - 音频中断恢复（如来电、闹钟中断后自动恢复播放）
+
+    private func registerInterruptionObserver() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleInterruption(_:)),
+            name: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+    }
+
+    private func unregisterInterruptionObserver() {
+        NotificationCenter.default.removeObserver(
+            self,
+            name: AVAudioSession.interruptionNotification,
+            object: nil
+        )
+    }
+
+    @objc private func handleInterruption(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+
+        switch type {
+        case .began:
+            // 中断开始（如来电）：标记，等待结束后恢复
+            wasInterrupted = true
+            print("[KeepAlive] audio session interrupted (began)")
+        case .ended:
+            // 中断结束：重新激活音频会话并恢复播放
+            print("[KeepAlive] audio session interruption ended, resuming")
+            configureAudioSession()
+            if wasInterrupted {
+                wasInterrupted = false
+                _ = audioPlayer?.play()
+            }
+        @unknown default:
+            break
+        }
     }
 
     /// 生成 1 秒静音 PCM WAV（44100Hz / 16bit / mono）
