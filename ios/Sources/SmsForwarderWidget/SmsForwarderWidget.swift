@@ -17,52 +17,81 @@ struct CodeLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: CodeActivityAttributes.self) { context in
             // 锁屏 / 通知中心 Live Activity
-            LockScreenView(state: context.state)
+            if context.state.isIdle {
+                IdleLockScreenView()
+            } else {
+                LockScreenView(state: context.state)
+            }
         } dynamicIsland: { context in
-            let s = context.state
-            return DynamicIsland {
-                // 展开模式
-                DynamicIslandExpandedRegion(.leading) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "number.circle.fill")
-                            .foregroundStyle(.green)
-                        Text(s.projectName)
-                            .font(.headline)
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
+            if context.state.isIdle {
+                // 待命状态：灵动岛只显示一个小图标
+                return DynamicIsland {
+                    DynamicIslandExpandedRegion(.center) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "shield.checkered")
+                                .foregroundStyle(.green)
+                            Text("验证码监听中")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                } compactLeading: {
+                    Image(systemName: "shield.checkered")
+                        .foregroundStyle(.green)
+                        .font(.caption2)
+                } compactTrailing: {
+                    EmptyView()
+                } minimal: {
+                    Image(systemName: "shield.checkered")
+                        .foregroundStyle(.green)
+                        .font(.caption2)
                 }
-                DynamicIslandExpandedRegion(.trailing) {
+            } else {
+                let s = context.state
+                return DynamicIsland {
+                    // 展开模式
+                    DynamicIslandExpandedRegion(.leading) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "number.circle.fill")
+                                .foregroundStyle(.green)
+                            Text(s.projectName)
+                                .font(.headline)
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                        }
+                    }
+                    DynamicIslandExpandedRegion(.trailing) {
+                        Text(s.code)
+                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(.green)
+                    }
+                    DynamicIslandExpandedRegion(.bottom) {
+                        HStack(spacing: 10) {
+                            Label(s.sender, systemImage: "person.crop.circle")
+                                .lineLimit(1)
+                            Spacer()
+                            Label(s.deviceName, systemImage: "iphone")
+                                .lineLimit(1)
+                            Text(s.receivedTime, style: .time)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                } compactLeading: {
+                    Image(systemName: "number.circle.fill")
+                        .foregroundStyle(.green)
+                } compactTrailing: {
                     Text(s.code)
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .font(.system(.caption, design: .rounded).weight(.bold))
+                        .monospacedDigit()
+                        .foregroundStyle(.green)
+                } minimal: {
+                    Text(s.code)
+                        .font(.system(.caption2, design: .rounded).weight(.bold))
                         .monospacedDigit()
                         .foregroundStyle(.green)
                 }
-                DynamicIslandExpandedRegion(.bottom) {
-                    HStack(spacing: 10) {
-                        Label(s.sender, systemImage: "person.crop.circle")
-                            .lineLimit(1)
-                        Spacer()
-                        Label(s.deviceName, systemImage: "iphone")
-                            .lineLimit(1)
-                        Text(s.receivedTime, style: .time)
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-            } compactLeading: {
-                Image(systemName: "number.circle.fill")
-                    .foregroundStyle(.green)
-            } compactTrailing: {
-                Text(s.code)
-                    .font(.system(.caption, design: .rounded).weight(.bold))
-                    .monospacedDigit()
-                    .foregroundStyle(.green)
-            } minimal: {
-                Text(s.code)
-                    .font(.system(.caption2, design: .rounded).weight(.bold))
-                    .monospacedDigit()
-                    .foregroundStyle(.green)
             }
         }
     }
@@ -111,6 +140,24 @@ private struct LockScreenView: View {
                 }
                 .foregroundStyle(.secondary)
             }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+    }
+}
+
+// MARK: - 待命状态锁屏视图
+
+private struct IdleLockScreenView: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "shield.checkered")
+                .font(.title3)
+                .foregroundStyle(.green)
+            Text("验证码监听中")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Spacer()
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)

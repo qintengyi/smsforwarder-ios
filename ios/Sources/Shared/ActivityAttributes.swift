@@ -18,6 +18,8 @@ struct CodeActivityAttributes: ActivityAttributes {
         var deviceName: String
         /// 收到时间
         var receivedTime: Date
+        /// 是否为待命状态（无验证码时显示"监听中"）
+        var isIdle: Bool = false
     }
 
     /// 规则 ID，用于标识本次活动由哪条订阅规则触发

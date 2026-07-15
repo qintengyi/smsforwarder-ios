@@ -55,6 +55,8 @@ final class MonitoringCoordinator {
                 // 前台：只用 WS
                 poller.stop()
                 ws.start()
+                // 前台时启动待命灵动岛（Activity.request 只能在前台调用）
+                la.startStandby()
             }
             ka.start()
             isRunning = true
@@ -62,13 +64,13 @@ final class MonitoringCoordinator {
             ws.stop()
             poller.stop()
             ka.stop()
+            la.stopStandby()
             isRunning = false
         }
     }
 
     /// App 进入后台：WS 保持连接 + 启动 HTTP 轮询作为后备
-    /// 如果 audio 保活生效，WS 可能在后台也能保持
-    /// 如果 WS 被系统中断，poller 仍然能获取短信
+    /// 灵动岛已在前台预启动，后台收到验证码时用 activity.update() 更新
     func onBackground() {
         isBackground = true
         print("[Monitor] onBackground: starting poller as backup (WS stays alive)")
@@ -79,13 +81,18 @@ final class MonitoringCoordinator {
     }
 
     /// App 回到前台：停止 poller，只在 WS 断开时重连
+    /// 确保待命灵动岛存在（可能被系统清理）
     func onForeground() {
         guard isBackground else { return }
         isBackground = false
         print("[Monitor] onForeground: stopping poller, ws.isConnected=\(ws.isConnected)")
         poller.stop()
-        if enabled && SettingsStore.shared.settings.isLoggedIn && !ws.isConnected {
-            ws.start()
+        if enabled && SettingsStore.shared.settings.isLoggedIn {
+            if !ws.isConnected {
+                ws.start()
+            }
+            // 确保待命灵动岛存在
+            la.startStandby()
         }
     }
 
