@@ -2,19 +2,21 @@ import CoreLocation
 import Observation
 import UIKit
 
-// MARK: - 后台保活管理器（定位模式）
+// MARK: - 后台保活管理器（定位模式 · 极简版）
 
-/// 通过 CLLocationManager 低功耗定位保持 App 在后台持续运行
+/// 通过 startMonitoringSignificantLocationChanges 保持 App 在后台可被唤醒
 ///
-/// 参考 AFN.dylib（微信保活插件）的策略：
-/// 1. startMonitoringSignificantLocationChanges — 基站变化时唤醒 App（极低功耗）
-/// 2. startUpdatingLocation + kCLLocationAccuracyThreeKilometers — 3km 精度仅用基站 triangulation
-/// 3. beginBackgroundTask + 定时刷新 — 获取额外后台处理时间
+/// 策略：
+/// - 只用 startMonitoringSignificantLocationChanges（基站变化唤醒，极低功耗）
+/// - 不用 startUpdatingLocation（避免持续定位开销和潜在崩溃）
+/// - 不用 allowsBackgroundLocationUpdates（避免授权相关崩溃）
+/// - 不用 beginBackgroundTask（极简策略，不需要额外后台时间）
+/// - 唤醒后触发一次 HTTP 轮询检查新短信
 ///
-/// ⚠️ 关键设计：
-/// - KeepAliveManager 只做 @Observable，不继承 NSObject（避免宏冲突崩溃）
-/// - CLLocationManagerDelegate 放到独立的 LocationDelegate 类
-/// - allowsBackgroundLocationUpdates 必须在授权后设置
+/// 这是 iOS 最安全的后台保活方式：
+/// - 不需要 allowsBackgroundLocationUpdates
+/// - 不需要持续 GPS
+/// - 可从挂起状态唤醒 App（约 10-20 秒处理时间）
 @Observable
 final class KeepAliveManager {
     static let shared = KeepAliveManager()
@@ -27,38 +29,35 @@ final class KeepAliveManager {
     var startedAt: String = ""
     /// 定位授权状态（供调试面板查看）
     var authStatus: String = "未请求"
-    /// 后台剩余时间（供调试面板查看）
-    var bgTimeRemaining: TimeInterval = 0
+    /// 最近一次唤醒时间
+    var lastWakeTime: String = ""
+    /// 唤醒次数
+    var wakeCount: Int = 0
 
     @ObservationIgnored private let lm = CLLocationManager()
     @ObservationIgnored private let delegate = LocationDelegate()
-    @ObservationIgnored private var bgTaskId: UIBackgroundTaskIdentifier = UIBackgroundTaskIdentifier.invalid
-    @ObservationIgnored private var bgTaskTimer: Timer?
-    /// 定位更新是否已启动（防止重复启动）
-    @ObservationIgnored private var locationUpdatesStarted: Bool = false
+    @ObservationIgnored private var hasStarted = false
 
     init() {
-        // 配置 delegate 回调
         delegate.onAuthChange = { [weak self] status in
-            self?.handleAuthChange(status)
+            DispatchQueue.main.async { self?.handleAuthChange(status) }
         }
         delegate.onError = { [weak self] error in
-            self?.lastError = error
+            DispatchQueue.main.async { self?.lastError = error }
         }
-        delegate.onPause = { [weak self] in
-            self?.handlePause()
+        delegate.onLocationUpdate = { [weak self] in
+            DispatchQueue.main.async { self?.handleLocationWake() }
         }
 
-        // 配置 CLLocationManager
         lm.delegate = delegate
         lm.desiredAccuracy = kCLLocationAccuracyThreeKilometers
-        lm.pausesLocationUpdatesAutomatically = false
-        lm.activityType = .other
-        // ⚠️ allowsBackgroundLocationUpdates 在 startLocationUpdates() 中授权后设置
+        // 不设置 allowsBackgroundLocationUpdates（避免崩溃）
+        // 不调用 startUpdatingLocation（避免持续定位）
     }
 
     func start() {
-        guard !isKeepingAlive else { return }
+        guard !hasStarted else { return }
+        hasStarted = true
         isKeepingAlive = true
         lastError = ""
 
@@ -74,53 +73,35 @@ final class KeepAliveManager {
             lm.requestWhenInUseAuthorization()
             authStatus = "等待授权"
         case .authorizedWhenInUse, .authorizedAlways:
-            startLocationUpdates()
+            startMonitoring()
         case .denied, .restricted:
             lastError = "定位权限被拒绝，无法后台保活。请在设置→SmsForwarder→位置中开启"
             authStatus = "已拒绝"
             isKeepingAlive = false
+            hasStarted = false
         @unknown default:
             lm.requestWhenInUseAuthorization()
         }
-
-        print("[KeepAlive] start requested (accuracy=3km)")
     }
 
     func stop() {
-        if locationUpdatesStarted {
-            lm.stopUpdatingLocation()
+        if hasStarted {
             lm.stopMonitoringSignificantLocationChanges()
-            locationUpdatesStarted = false
+            hasStarted = false
         }
-        stopBgTaskTimer()
-        endBgTask()
         isKeepingAlive = false
         print("[KeepAlive] stopped")
     }
 
-    // MARK: - 定位更新（授权后调用）
+    // MARK: - 监控启动
 
-    /// 启动定位更新 — 仅在授权后调用
-    private func startLocationUpdates() {
-        guard !locationUpdatesStarted else { return }
-        locationUpdatesStarted = true
-
-        // 授权后才能设置 allowsBackgroundLocationUpdates
-        lm.allowsBackgroundLocationUpdates = true
-
-        // 启动显著位置变化监听（基站变化时唤醒 App，可从挂起状态恢复）
+    /// 只启动 significantLocationChanges，不启动 startUpdatingLocation
+    private func startMonitoring() {
         lm.startMonitoringSignificantLocationChanges()
-
-        // 启动低精度持续定位（保持 App 在后台不被挂起）
-        lm.startUpdatingLocation()
-
-        // 启动后台任务定时器
-        startBgTaskTimer()
-
-        print("[KeepAlive] location updates started (accuracy=3km, significantChanges=on)")
+        print("[KeepAlive] significantLocationChanges started")
     }
 
-    // MARK: - 授权回调处理
+    // MARK: - 授权回调
 
     private func handleAuthChange(_ status: CLAuthorizationStatus) {
         switch status {
@@ -130,86 +111,52 @@ final class KeepAliveManager {
             authStatus = "受限"
         case .denied:
             authStatus = "已拒绝"
-            lastError = "定位权限被拒绝，无法后台保活。请在设置→SmsForwarder→位置中开启"
+            lastError = "定位权限被拒绝"
         case .authorizedAlways:
             authStatus = "始终"
-            if isKeepingAlive && !locationUpdatesStarted {
-                startLocationUpdates()
+            if hasStarted && !isKeepingAlive {
+                isKeepingAlive = true
+                startMonitoring()
             }
         case .authorizedWhenInUse:
             authStatus = "使用时"
-            if isKeepingAlive && !locationUpdatesStarted {
-                startLocationUpdates()
+            if hasStarted && !isKeepingAlive {
+                isKeepingAlive = true
+                startMonitoring()
             }
         @unknown default:
             authStatus = "未知"
         }
-        print("[KeepAlive] location auth changed: \(authStatus)")
+        print("[KeepAlive] auth changed: \(authStatus)")
     }
 
-    private func handlePause() {
-        print("[KeepAlive] location updates paused by system, restarting")
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self, self.locationUpdatesStarted else { return }
-            self.lm.startUpdatingLocation()
-            self.lm.startMonitoringSignificantLocationChanges()
-        }
-    }
+    // MARK: - 位置唤醒回调
 
-    // MARK: - 后台任务管理
+    /// significantLocationChanges 触发时调用
+    /// App 被唤醒，有约 10-20 秒处理时间
+    private func handleLocationWake() {
+        wakeCount += 1
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        lastWakeTime = formatter.string(from: Date())
+        print("[KeepAlive] location wake #\(wakeCount) at \(lastWakeTime)")
 
-    private func startBgTaskTimer() {
-        bgTaskTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            self?.requestMoreBackgroundTime()
-        }
-        requestMoreBackgroundTime()
-    }
-
-    private func stopBgTaskTimer() {
-        bgTaskTimer?.invalidate()
-        bgTaskTimer = nil
-    }
-
-    private func requestMoreBackgroundTime() {
-        if bgTaskId != UIBackgroundTaskIdentifier.invalid {
-            UIApplication.shared.endBackgroundTask(bgTaskId)
-            bgTaskId = UIBackgroundTaskIdentifier.invalid
-        }
-
-        bgTimeRemaining = UIApplication.shared.backgroundTimeRemaining
-
-        bgTaskId = UIApplication.shared.beginBackgroundTask(withName: "KeepAlive") { [weak self] in
-            self?.handleBgTaskExpired()
-        }
-    }
-
-    private func handleBgTaskExpired() {
-        print("[KeepAlive] background task expired, requesting more")
-        if bgTaskId != UIBackgroundTaskIdentifier.invalid {
-            UIApplication.shared.endBackgroundTask(bgTaskId)
-            bgTaskId = UIBackgroundTaskIdentifier.invalid
-        }
-        requestMoreBackgroundTime()
-    }
-
-    private func endBgTask() {
-        if bgTaskId != UIBackgroundTaskIdentifier.invalid {
-            UIApplication.shared.endBackgroundTask(bgTaskId)
-            bgTaskId = UIBackgroundTaskIdentifier.invalid
-        }
+        // 触发一次后台轮询检查新短信
+        // BackgroundPoller 会在有新短信时通知 LiveActivityManager
+        Task { await BackgroundPoller.shared.pollOnce() }
     }
 }
 
 // MARK: - CLLocationManagerDelegate 独立类
-// 与 @Observable 类分离，避免宏冲突崩溃
 
 private final class LocationDelegate: NSObject, CLLocationManagerDelegate {
     var onAuthChange: ((CLAuthorizationStatus) -> Void)?
     var onError: ((String) -> Void)?
-    var onPause: (() -> Void)?
+    var onLocationUpdate: (() -> Void)?
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        // 位置更新保持 App 在后台不被挂起，不使用位置数据
+        // significantLocationChanges 触发，通知 KeepAliveManager
+        onLocationUpdate?()
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
@@ -218,9 +165,5 @@ private final class LocationDelegate: NSObject, CLLocationManagerDelegate {
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         onAuthChange?(manager.authorizationStatus)
-    }
-
-    func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
-        onPause?()
     }
 }

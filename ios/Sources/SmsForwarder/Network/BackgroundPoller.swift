@@ -4,7 +4,7 @@ import Observation
 // MARK: - 后台短信轮询器
 
 /// 当 WebSocket 在后台不可靠时，改用 HTTP 轮询获取最新短信
-/// 依赖 audio 后台保活维持 App 运行，让异步任务在后台正常工作
+/// 依赖 location 后台保活维持 App 运行，让异步任务在后台正常工作
 @Observable
 final class BackgroundPoller {
     static let shared = BackgroundPoller()
@@ -50,7 +50,8 @@ final class BackgroundPoller {
         }
     }
 
-    private func pollOnce() async {
+    /// 单次轮询（可供 KeepAliveManager 在位置唤醒时调用）
+    func pollOnce() async {
         let settings = settingsStore.settings
         guard settings.isLoggedIn, let token = settings.token, !token.isEmpty else { return }
 

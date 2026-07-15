@@ -172,10 +172,17 @@ struct SettingsView: View {
                         Spacer()
                         Text(ka.authStatus).foregroundStyle(.secondary)
                     }
+                    if !ka.lastWakeTime.isEmpty {
+                        HStack {
+                            Text("最近唤醒")
+                            Spacer()
+                            Text(ka.lastWakeTime).foregroundStyle(.secondary)
+                        }
+                    }
                     HStack {
-                        Text("后台剩余")
+                        Text("唤醒次数")
                         Spacer()
-                        Text("\(Int(ka.bgTimeRemaining))秒").foregroundStyle(.secondary)
+                        Text("\(ka.wakeCount)").foregroundStyle(.secondary)
                     }
                 }
                 if !ka.lastError.isEmpty {
