@@ -12,30 +12,45 @@ final class LiveActivityManager {
     /// 当前活跃的活动（ruleId -> Activity）
     private var activities: [String: Activity<CodeActivityAttributes>] = [:]
 
+    /// 调试信息
+    var lastDebugLog: String = ""
+    var activitiesEnabled: Bool { ActivityAuthorizationInfo().areActivitiesEnabled }
+
     /// 处理一条收到的实时短信
     func handleSMS(deviceId: Int, deviceName: String, sms: WSSmsRecord) {
         let content = sms.content ?? ""
         guard !content.isEmpty else {
-            print("[LiveActivity] handleSMS skipped: empty content")
+            lastDebugLog = "[\(timeStr())] 收到空短信，跳过"
             return
         }
-
-        print("[LiveActivity] handleSMS: deviceId=\(deviceId) name=\(deviceName) content=\(String(content.prefix(80)))")
 
         let rules = RuleStore.shared.matchingRules(deviceId: deviceId, content: content)
         guard let rule = rules.first else {
-            print("[LiveActivity] no matching rule for device \(deviceId) (rules count=\(RuleStore.shared.rules.count))")
+            lastDebugLog = "[\(timeStr())] 设备\(deviceId)无匹配规则（共\(RuleStore.shared.rules.count)条规则）\n短信: \(String(content.prefix(60)))"
             return
         }
         guard let code = CodeExtractor.code(from: content) else {
-            print("[LiveActivity] rule matched but no code extracted from: \(String(content.prefix(80)))")
+            lastDebugLog = "[\(timeStr())] 规则匹配但未提取到验证码\n短信: \(String(content.prefix(60)))"
             return
         }
 
         let projectName = CodeExtractor.projectName(from: content, fallback: sms.name)
         let sender = (sms.name?.isEmpty == false ? sms.name : sms.number) ?? "未知发送方"
-        print("[LiveActivity] starting activity: project=\(projectName) code=\(code) sender=\(sender) device=\(deviceName)")
+        lastDebugLog = "[\(timeStr())] 启动灵动岛: \(projectName) \(code)"
         startActivity(rule: rule, projectName: projectName, code: code, sender: sender, deviceName: deviceName)
+    }
+
+    /// 手动测试灵动岛（不经过 WebSocket，直接启动）
+    func testActivity() {
+        let testRule = CodeRule(deviceId: 0, deviceName: "测试设备", keyword: "", enabled: true, autoEndMinutes: 2)
+        lastDebugLog = "[\(timeStr())] 手动测试灵动岛..."
+        startActivity(rule: testRule, projectName: "测试项目", code: "123456", sender: "测试发送方", deviceName: "测试设备")
+    }
+
+    private func timeStr() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f.string(from: Date())
     }
 
     /// 启动灵动岛（同规则先结束旧的，避免重复）

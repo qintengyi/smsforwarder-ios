@@ -18,6 +18,9 @@ final class WebSocketClient {
 
     var isConnected: Bool = false
     var lastError: String?
+    var connectCount: Int = 0
+    var lastReceivedSMSContent: String = ""
+    var lastReceivedSMSTime: String = ""
 
     private var task: URLSessionWebSocketTask?
     private var session: URLSession?
@@ -81,6 +84,8 @@ final class WebSocketClient {
 
         isConnected = true
         reconnectAttempts = 0
+        connectCount += 1
+        lastError = nil
 
         receiveLoop(generation: gen)
         startPing()
@@ -165,6 +170,10 @@ final class WebSocketClient {
             guard let smsData = try? JSONSerialization.data(withJSONObject: smsJson),
                   let sms = try? JSONDecoder().decode(WSSmsRecord.self, from: smsData) else { return }
             print("[WSClient] received SMS: device=\(deviceId) name=\(deviceName) content=\(String((sms.content ?? "").prefix(60)))")
+            self.lastReceivedSMSContent = String((sms.content ?? "").prefix(100))
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm:ss"
+            self.lastReceivedSMSTime = formatter.string(from: Date())
             self.onSMS?(deviceId, deviceName, sms)
         case "ack":
             // 订阅确认，记录但不处理

@@ -143,6 +143,68 @@ struct SettingsView: View {
             }
 
             Section {
+                let ws = WebSocketClient.shared
+                let la = LiveActivityManager.shared
+                let mc = MonitoringCoordinator.shared
+
+                HStack {
+                    Text("监听开关")
+                    Spacer()
+                    Text(mc.enabled ? "已开启" : "未开启")
+                        .foregroundStyle(mc.enabled ? .green : .secondary)
+                }
+                HStack {
+                    Text("WS 连接")
+                    Spacer()
+                    Text(ws.isConnected ? "已连接" : "未连接")
+                        .foregroundStyle(ws.isConnected ? .green : .red)
+                }
+                HStack {
+                    Text("连接次数")
+                    Spacer()
+                    Text("\(ws.connectCount)").foregroundStyle(.secondary)
+                }
+                HStack {
+                    Text("灵动岛可用")
+                    Spacer()
+                    Text(la.activitiesEnabled ? "是" : "否（系统设置中未开启）")
+                        .foregroundStyle(la.activitiesEnabled ? .green : .red)
+                }
+                if let err = ws.lastError, !err.isEmpty {
+                    HStack {
+                        Text("最后错误")
+                        Spacer()
+                        Text(err).font(.caption).foregroundStyle(.red).lineLimit(2)
+                    }
+                }
+                if !ws.lastReceivedSMSContent.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("最后收到短信").font(.caption).foregroundStyle(.secondary)
+                        Text("[\(ws.lastReceivedSMSTime)] \(ws.lastReceivedSMSContent)")
+                            .font(.caption2)
+                            .lineLimit(3)
+                    }
+                }
+                if !la.lastDebugLog.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("灵动岛日志").font(.caption).foregroundStyle(.secondary)
+                        Text(la.lastDebugLog).font(.caption2).lineLimit(5)
+                    }
+                }
+
+                Button {
+                    la.testActivity()
+                } label: {
+                    Label("测试灵动岛", systemImage: "sparkles")
+                        .frame(maxWidth: .infinity)
+                }
+            } header: {
+                Text("调试信息")
+            } footer: {
+                Text("如果WS连接显示未连接或连接次数持续增长，说明连接不稳定。点击「测试灵动岛」可手动验证灵动岛功能是否正常。")
+            }
+
+            Section {
                 Text("iOS App 通过控制面板的 JSON API 获取数据。面板管理多台 SmsForwarder 设备，登录后可在仪表盘切换设备。所有数据请求通过面板代理转发到设备。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
