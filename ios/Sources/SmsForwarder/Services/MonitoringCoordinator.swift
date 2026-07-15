@@ -8,8 +8,9 @@ import Observation
 /// 策略：
 /// - 前台：WebSocket 实时推送（低延迟）
 /// - 后台：WebSocket 保持 + HTTP 轮询作为后备（双保险）
-/// - audio 后台保活贯穿前后台，让 App 在后台不被挂起
-/// - LiveActivityManager 内置 5 秒去重，防止 WS + poller 双路径重复触发
+/// - CLLocationManager 定位保活贯穿前后台，让 App 在后台不被挂起
+/// - 灵动岛：来验证码推送了再上岛（不预启动待命活动）
+/// - 本地通知：后台收到验证码时可靠弹窗
 @Observable
 final class MonitoringCoordinator {
     static let shared = MonitoringCoordinator()
@@ -58,33 +59,31 @@ final class MonitoringCoordinator {
                 // 前台：只用 WS
                 poller.stop()
                 ws.start()
-                // 前台时启动待命灵动岛（Activity.request 只能在前台调用）
-                la.startStandby()
             }
+            // 定位保活贯穿前后台
             ka.start()
             isRunning = true
         } else {
             ws.stop()
             poller.stop()
             ka.stop()
-            la.stopStandby()
+            la.endAll()
             isRunning = false
         }
     }
 
     /// App 进入后台：WS 保持连接 + 启动 HTTP 轮询作为后备
-    /// 灵动岛已在前台预启动，后台收到验证码时用 activity.update() 更新
+    /// 定位保活已在前台启动，后台继续运行
     func onBackground() {
         isBackground = true
         print("[Monitor] onBackground: starting poller as backup (WS stays alive)")
         if enabled && SettingsStore.shared.settings.isLoggedIn {
             poller.start()
         }
-        // 不主动断开 WS
     }
 
     /// App 回到前台：停止 poller，只在 WS 断开时重连
-    /// 处理后台暂存的验证码 + 确保待命灵动岛存在
+    /// 处理后台暂存的验证码（如果 Activity.request 在后台失败）
     func onForeground() {
         guard isBackground else { return }
         isBackground = false
@@ -94,10 +93,8 @@ final class MonitoringCoordinator {
             if !ws.isConnected {
                 ws.start()
             }
-            // 先处理后台暂存的验证码（如果有）
+            // 补显示后台暂存的验证码（如果有的话）
             la.processPending()
-            // 确保待命灵动岛存在
-            la.startStandby()
         }
     }
 

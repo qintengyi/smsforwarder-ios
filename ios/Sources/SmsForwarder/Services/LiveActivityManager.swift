@@ -8,8 +8,10 @@ import UIKit
 
 /// 验证码通知管理器
 ///
+/// 策略：来验证码推送了再上岛（不预启动待命活动）
+///
 /// 双通道通知：
-/// 1. Live Activity（灵动岛）— 前台预启动 + 后台 update
+/// 1. Live Activity（灵动岛）— 收到验证码时创建/更新
 /// 2. 本地通知 — 后台可靠后备，即使灵动岛失败也能看到验证码
 @Observable
 final class LiveActivityManager {
@@ -17,7 +19,6 @@ final class LiveActivityManager {
 
     var lastDebugLog: String = ""
     var activitiesEnabled: Bool { ActivityAuthorizationInfo().areActivitiesEnabled }
-    var standbyActive: Bool = false
     var lastUpdatePath: String = ""
     var pendingCount: Int = 0
     /// 通知权限是否已授权
@@ -47,50 +48,6 @@ final class LiveActivityManager {
                 print("[LiveActivity] notification permission: \(granted ? "granted" : "denied")")
             }
         }
-    }
-
-    // MARK: - 待命活动管理
-
-    func startStandby() {
-        guard activitiesEnabled else {
-            print("[LiveActivity] cannot start standby: activities not enabled")
-            return
-        }
-
-        let existing = Activity<CodeActivityAttributes>.activities.filter { $0.activityState == .active }
-        if !existing.isEmpty {
-            print("[LiveActivity] found \(existing.count) existing active activity(ies)")
-            standbyActive = true
-            updateToIdle(activity: existing[0])
-            return
-        }
-
-        let attributes = CodeActivityAttributes(ruleId: "standby")
-        let state = CodeActivityAttributes.ContentState(
-            projectName: "", code: "", sender: "", deviceName: "",
-            receivedTime: Date(), isIdle: true
-        )
-
-        do {
-            let content = ActivityContent(state: state, staleDate: nil)
-            let activity = try Activity.request(attributes: attributes, content: content, pushType: nil)
-            standbyActive = true
-            lastDebugLog = "[\(timeStr())] 待命灵动岛已启动"
-            print("[LiveActivity] standby started, id=\(activity.id)")
-        } catch {
-            standbyActive = false
-            lastDebugLog = "[\(timeStr())] 启动待命失败: \(error.localizedDescription)"
-            print("[LiveActivity] standby failed: \(error.localizedDescription)")
-        }
-    }
-
-    func stopStandby() {
-        resetTimer?.invalidate()
-        resetTimer = nil
-        for activity in Activity<CodeActivityAttributes>.activities {
-            Task { await activity.end(dismissalPolicy: .immediate) }
-        }
-        standbyActive = false
     }
 
     // MARK: - 短信处理
@@ -138,44 +95,41 @@ final class LiveActivityManager {
 
         let state = CodeActivityAttributes.ContentState(
             projectName: projectName, code: code, sender: sender,
-            deviceName: deviceName, receivedTime: Date(), isIdle: false
+            deviceName: deviceName, receivedTime: Date()
         )
         let minutes = max(1, rule.autoEndMinutes)
         let staleDate = Date().addingTimeInterval(TimeInterval(minutes * 60))
         let content = ActivityContent(state: state, staleDate: staleDate)
 
         // 通道 1：尝试 Live Activity
+        // 查找已有的活跃活动（可能上次验证码创建的还未结束）
         let activeActivities = Activity<CodeActivityAttributes>.activities.filter { $0.activityState == .active }
         if let activity = activeActivities.first {
+            // 更新已有活动
             lastUpdatePath = "update(活动数:\(activeActivities.count))"
-            standbyActive = true
-            print("[LiveActivity] updating activity id=\(activity.id)")
+            print("[LiveActivity] updating existing activity id=\(activity.id)")
             Task { await activity.update(content) }
-            scheduleResetToIdle(minutes: minutes)
+            scheduleEndActivity(minutes: minutes)
         } else {
-            standbyActive = false
+            // 创建新活动
             do {
                 let attributes = CodeActivityAttributes(ruleId: rule.id)
                 let activity = try Activity.request(attributes: attributes, content: content, pushType: nil)
                 lastUpdatePath = "request(成功)"
-                standbyActive = true
-                print("[LiveActivity] request succeeded, id=\(activity.id)")
-                scheduleResetToIdle(minutes: minutes)
+                print("[LiveActivity] created new activity id=\(activity.id)")
+                scheduleEndActivity(minutes: minutes)
             } catch {
-                lastUpdatePath = "request失败"
+                // 后台 Activity.request 可能失败，存为 pending
+                lastUpdatePath = "request失败:\(error.localizedDescription)"
                 pendingSMS = PendingCode(rule: rule, projectName: projectName, code: code, sender: sender, deviceName: deviceName, timestamp: Date())
                 pendingCount = 1
-                print("[LiveActivity] request failed: \(error.localizedDescription)")
+                print("[LiveActivity] request failed: \(error.localizedDescription), saved as pending")
             }
         }
 
-        // 通道 2：本地通知（后台时必定发送，前台时跳过避免打扰）
+        // 通道 2：本地通知（后台时发送，前台时跳过避免打扰）
         if isBackground {
             sendLocalNotification(projectName: projectName, code: code, sender: sender, deviceName: deviceName)
-        }
-
-        // 更新日志
-        if isBackground {
             lastDebugLog = "[\(timeStr())] 验证码: \(projectName) \(code) (后台通知已发送)"
         }
     }
@@ -214,7 +168,7 @@ final class LiveActivityManager {
         }
     }
 
-    /// 回到前台时处理暂存的验证码
+    /// 回到前台时处理暂存的验证码（后台 Activity.request 失败的情况）
     func processPending() {
         guard let pending = pendingSMS else { return }
         pendingSMS = nil
@@ -223,60 +177,45 @@ final class LiveActivityManager {
 
         let state = CodeActivityAttributes.ContentState(
             projectName: pending.projectName, code: pending.code, sender: pending.sender,
-            deviceName: pending.deviceName, receivedTime: pending.timestamp, isIdle: false
+            deviceName: pending.deviceName, receivedTime: pending.timestamp
         )
         let minutes = max(1, pending.rule.autoEndMinutes)
         let staleDate = Date().addingTimeInterval(TimeInterval(minutes * 60))
         let content = ActivityContent(state: state, staleDate: staleDate)
 
-        let activeActivities = Activity<CodeActivityAttributes>.activities.filter { $0.activityState == .active }
-        if let activity = activeActivities.first {
-            Task { await activity.update(content) }
-            lastUpdatePath = "pending→update"
+        // 先结束已有活动
+        for activity in Activity<CodeActivityAttributes>.activities where activity.activityState == .active {
+            Task { await activity.end(dismissalPolicy: .immediate) }
+        }
+
+        // 创建新活动显示 pending 验证码
+        do {
+            let attributes = CodeActivityAttributes(ruleId: pending.rule.id)
+            let activity = try Activity.request(attributes: attributes, content: content, pushType: nil)
+            lastUpdatePath = "pending→request"
             lastDebugLog = "[\(timeStr())] 补显示: \(pending.projectName) \(pending.code)"
-            standbyActive = true
-            scheduleResetToIdle(minutes: minutes)
-        } else {
-            do {
-                let attributes = CodeActivityAttributes(ruleId: pending.rule.id)
-                let activity = try Activity.request(attributes: attributes, content: content, pushType: nil)
-                lastUpdatePath = "pending→request"
-                lastDebugLog = "[\(timeStr())] 补显示: \(pending.projectName) \(pending.code)"
-                standbyActive = true
-                scheduleResetToIdle(minutes: minutes)
-            } catch {
-                lastUpdatePath = "pending→失败"
-                lastDebugLog = "[\(timeStr())] 补显示失败: \(error.localizedDescription)"
-            }
+            scheduleEndActivity(minutes: minutes)
+        } catch {
+            lastUpdatePath = "pending→失败"
+            lastDebugLog = "[\(timeStr())] 补显示失败: \(error.localizedDescription)"
         }
     }
 
-    // MARK: - 超时重置
+    // MARK: - 超时结束
 
-    private func scheduleResetToIdle(minutes: Int) {
+    /// N 分钟后结束活动（不再重置为待命）
+    private func scheduleEndActivity(minutes: Int) {
         resetTimer?.invalidate()
         resetTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(minutes * 60), repeats: false) { [weak self] _ in
-            self?.resetToIdle()
+            self?.endAllActivities()
         }
     }
 
-    private func resetToIdle() {
-        let activeActivities = Activity<CodeActivityAttributes>.activities.filter { $0.activityState == .active }
-        guard let activity = activeActivities.first else {
-            standbyActive = false
-            return
+    private func endAllActivities() {
+        for activity in Activity<CodeActivityAttributes>.activities where activity.activityState == .active {
+            Task { await activity.end(dismissalPolicy: .immediate) }
         }
-        updateToIdle(activity: activity)
-        lastDebugLog = "[\(timeStr())] 已重置为待命"
-    }
-
-    private func updateToIdle(activity: Activity<CodeActivityAttributes>) {
-        let idleState = CodeActivityAttributes.ContentState(
-            projectName: "", code: "", sender: "", deviceName: "",
-            receivedTime: Date(), isIdle: true
-        )
-        let content = ActivityContent(state: idleState, staleDate: nil)
-        Task { await activity.update(content) }
+        lastDebugLog = "[\(timeStr())] 验证码活动已结束"
     }
 
     // MARK: - 清理
@@ -289,7 +228,6 @@ final class LiveActivityManager {
         for activity in Activity<CodeActivityAttributes>.activities {
             Task { await activity.end(dismissalPolicy: .immediate) }
         }
-        standbyActive = false
     }
 
     func cleanupStale() {
@@ -298,7 +236,6 @@ final class LiveActivityManager {
         for activity in Activity<CodeActivityAttributes>.activities {
             Task { await activity.end(dismissalPolicy: .immediate) }
         }
-        standbyActive = false
     }
 
     private func timeStr() -> String {

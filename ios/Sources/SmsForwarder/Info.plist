@@ -17,7 +17,7 @@
     <key>CFBundleShortVersionString</key>
     <string>1.3</string>
     <key>CFBundleVersion</key>
-    <string>14</string>
+    <string>15</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>UIRequiresFullScreen</key>
@@ -53,7 +53,9 @@
     <true/>
     <key>UIBackgroundModes</key>
     <array>
-        <string>audio</string>
+        <string>location</string>
     </array>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>开启后可在后台保持连接，及时接收验证码通知。使用低功耗基站定位（3km精度），不会显著影响电量。</string>
 </dict>
 </plist>

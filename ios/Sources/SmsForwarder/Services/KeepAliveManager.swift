@@ -1,16 +1,24 @@
-import AVFoundation
+import CoreLocation
 import Observation
+import UIKit
 
-// MARK: - 后台保活管理器
+// MARK: - 后台保活管理器（定位模式）
 
-/// 通过播放极低音量音频保持 App 在后台持续运行
+/// 通过 CLLocationManager 低功耗定位保持 App 在后台持续运行
 ///
-/// 关键点：
-/// - 不能用纯静音（全零 WAV），iOS 14+ 会检测并终止后台音频权限
-/// - 必须播放有实际音频信号的文件，配合极低 volume（0.01）使其不可感知
-/// - 需要 Info.plist 配置 UIBackgroundModes: audio
+/// 参考 AFN.dylib（微信保活插件）的策略：
+/// 1. startMonitoringSignificantLocationChanges — 基站变化时唤醒 App（极低功耗）
+/// 2. startUpdatingLocation + kCLLocationAccuracyThreeKilometers — 3km 精度仅用基站 triangulation
+/// 3. beginBackgroundTask + 定时刷新 — 获取额外后台处理时间
+/// 4. 系统暂停后自动重启 — locationManagerDidPauseLocationUpdates
+///
+/// 相比音频保活的优势：
+/// - 不播放音频，零音频功耗
+/// - 3km 精度不启用 GPS 芯片，仅用基站
+/// - significantLocationChanges 可从挂起状态唤醒 App
+/// - 不会触发 iOS 静音检测
 @Observable
-final class KeepAliveManager {
+final class KeepAliveManager: NSObject, CLLocationManagerDelegate {
     static let shared = KeepAliveManager()
 
     /// 是否正在保活
@@ -19,198 +27,155 @@ final class KeepAliveManager {
     var lastError: String = ""
     /// 供调试面板查看的最后启动时间
     var startedAt: String = ""
+    /// 定位授权状态（供调试面板查看）
+    var authStatus: String = "未请求"
+    /// 后台剩余时间（供调试面板查看）
+    var bgTimeRemaining: TimeInterval = 0
 
-    private var audioPlayer: AVAudioPlayer?
-    private var wasInterrupted: Bool = false
-    private var healthTimer: Timer?
+    private let lm = CLLocationManager()
+    private var bgTaskId: UIBackgroundTaskIdentifier = 0
+    private var bgTaskTimer: Timer?
+
+    override init() {
+        super.init()
+        lm.delegate = self
+        // 3km 精度：仅使用基站 triangulation，不启用 GPS 芯片，功耗极低
+        lm.desiredAccuracy = kCLLocationAccuracyThreeKilometers
+        // 不自动暂停定位更新
+        lm.pausesLocationUpdatesAutomatically = false
+        // 允许后台定位更新（需要 UIBackgroundModes: location）
+        lm.allowsBackgroundLocationUpdates = true
+        lm.activityType = .other
+    }
 
     func start() {
         guard !isKeepingAlive else { return }
+        isKeepingAlive = true
+        lastError = ""
 
-        // 1. 配置音频会话
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-            try session.setActive(true)
-            print("[KeepAlive] audio session configured successfully")
-        } catch {
-            lastError = "session: \(error.localizedDescription)"
-            print("[KeepAlive] ERROR: audio session config failed: \(error.localizedDescription)")
-            return
-        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        startedAt = formatter.string(from: Date())
 
-        // 2. 播放极低音量音频
-        guard let url = keepAliveAudioURL() else {
-            lastError = "wav file generation failed"
-            print("[KeepAlive] ERROR: failed to create keep-alive audio file")
-            return
-        }
+        // 请求定位授权
+        lm.requestWhenInUseAuthorization()
 
-        do {
-            let player = try AVAudioPlayer(contentsOf: url)
-            player.numberOfLoops = -1   // 无限循环
-            player.volume = 0.01        // 极低但非零，避免 iOS 检测静音
-            guard player.prepareToPlay() else {
-                lastError = "prepareToPlay returned false"
-                print("[KeepAlive] ERROR: prepareToPlay failed")
-                return
-            }
-            guard player.play() else {
-                lastError = "play() returned false"
-                print("[KeepAlive] ERROR: play() failed")
-                return
-            }
-            audioPlayer = player
-            isKeepingAlive = true
-            lastError = ""
+        // 启动显著位置变化监听（基站变化时唤醒 App，可从挂起状态恢复）
+        lm.startMonitoringSignificantLocationChanges()
 
-            let formatter = DateFormatter()
-            formatter.dateFormat = "HH:mm:ss"
-            startedAt = formatter.string(from: Date())
+        // 启动低精度持续定位（保持 App 在后台不被挂起）
+        lm.startUpdatingLocation()
 
-            print("[KeepAlive] started successfully, player.isPlaying=\(player.isPlaying) duration=\(player.duration)s volume=\(player.volume)")
+        // 启动后台任务定时器
+        startBgTaskTimer()
 
-            registerObservers()
-            startHealthCheck()
-        } catch {
-            lastError = "player: \(error.localizedDescription)"
-            print("[KeepAlive] ERROR: AVAudioPlayer init failed: \(error.localizedDescription)")
-        }
+        print("[KeepAlive] started (location mode, accuracy=3km, significantChanges=on)")
     }
 
     func stop() {
-        healthTimer?.invalidate()
-        healthTimer = nil
-        audioPlayer?.stop()
-        audioPlayer = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        lm.stopUpdatingLocation()
+        lm.stopMonitoringSignificantLocationChanges()
+        stopBgTaskTimer()
+        endBgTask()
         isKeepingAlive = false
-        unregisterObservers()
         print("[KeepAlive] stopped")
     }
 
-    // MARK: - 健康检查
+    // MARK: - 后台任务管理
 
-    /// 每 30 秒检查播放器是否还在播放，如果停了就重启
-    private func startHealthCheck() {
-        healthTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            guard let self = self, self.isKeepingAlive else { return }
-            guard let player = self.audioPlayer else { return }
-            if !player.isPlaying {
-                print("[KeepAlive] player stopped unexpectedly, restarting")
-                _ = player.play()
+    /// 启动定时器，每 5 秒刷新后台任务
+    private func startBgTaskTimer() {
+        bgTaskTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            self?.requestMoreBackgroundTime()
+        }
+        requestMoreBackgroundTime()
+    }
+
+    private func stopBgTaskTimer() {
+        bgTaskTimer?.invalidate()
+        bgTaskTimer = nil
+    }
+
+    /// 请求更多后台处理时间
+    /// iOS 给约 30 秒后台时间，每 5 秒刷新一次确保不超时
+    private func requestMoreBackgroundTime() {
+        // 先结束旧任务
+        if bgTaskId != 0 {
+            UIApplication.shared.endBackgroundTask(bgTaskId)
+            bgTaskId = 0
+        }
+
+        bgTimeRemaining = UIApplication.shared.backgroundTimeRemaining
+        print("[KeepAlive] bgTimeRemaining=\(Int(bgTimeRemaining))s, requesting more")
+
+        bgTaskId = UIApplication.shared.beginBackgroundTask(withName: "KeepAlive") { [weak self] in
+            self?.handleBgTaskExpired()
+        }
+    }
+
+    private func handleBgTaskExpired() {
+        print("[KeepAlive] background task expired, requesting more")
+        if bgTaskId != 0 {
+            UIApplication.shared.endBackgroundTask(bgTaskId)
+            bgTaskId = 0
+        }
+        // 尝试请求更多时间
+        requestMoreBackgroundTime()
+    }
+
+    private func endBgTask() {
+        if bgTaskId != 0 {
+            UIApplication.shared.endBackgroundTask(bgTaskId)
+            bgTaskId = 0
+        }
+    }
+
+    // MARK: - CLLocationManagerDelegate
+
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        // 位置更新保持 App 在后台不被挂起
+        // 我们不使用位置数据，仅利用定位回调保活
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        lastError = error.localizedDescription
+        print("[KeepAlive] location error: \(error.localizedDescription)")
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let status = manager.authorizationStatus
+        switch status {
+        case .notDetermined:
+            authStatus = "未请求"
+        case .restricted:
+            authStatus = "受限"
+        case .denied:
+            authStatus = "已拒绝"
+            lastError = "定位权限被拒绝，无法后台保活。请在设置→SmsForwarder→位置中开启"
+        case .authorizedAlways:
+            authStatus = "始终"
+            if isKeepingAlive {
+                lm.startUpdatingLocation()
+                lm.startMonitoringSignificantLocationChanges()
             }
-        }
-    }
-
-    // MARK: - 音频文件
-
-    /// 极低音量 WAV 文件（1 秒 200Hz 正弦波，振幅 ~1000/32767）
-    /// 使用不同文件名避免复用旧版纯静音文件
-    private func keepAliveAudioURL() -> URL? {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("smsf_keepalive_v2.wav")
-        if FileManager.default.fileExists(atPath: url.path) { return url }
-        let data = Self.keepAliveWavData(seconds: 1)
-        do {
-            try data.write(to: url)
-            print("[KeepAlive] generated keep-alive WAV: \(data.count) bytes")
-            return url
-        } catch {
-            print("[KeepAlive] ERROR: failed to write WAV: \(error.localizedDescription)")
-            return nil
-        }
-    }
-
-    // MARK: - 中断 & 路由变化监听
-
-    private func registerObservers() {
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(handleInterruption(_:)),
-            name: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance()
-        )
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(handleRouteChange(_:)),
-            name: AVAudioSession.routeChangeNotification, object: AVAudioSession.sharedInstance()
-        )
-    }
-
-    private func unregisterObservers() {
-        NotificationCenter.default.removeObserver(self, name: AVAudioSession.interruptionNotification, object: nil)
-        NotificationCenter.default.removeObserver(self, name: AVAudioSession.routeChangeNotification, object: nil)
-    }
-
-    @objc private func handleInterruption(_ notification: Notification) {
-        guard let info = notification.userInfo,
-              let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
-
-        switch type {
-        case .began:
-            wasInterrupted = true
-            print("[KeepAlive] audio interrupted (began)")
-        case .ended:
-            print("[KeepAlive] audio interruption ended, resuming")
-            let session = AVAudioSession.sharedInstance()
-            try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-            try? session.setActive(true)
-            if wasInterrupted {
-                wasInterrupted = false
-                _ = audioPlayer?.play()
+        case .authorizedWhenInUse:
+            authStatus = "使用时"
+            if isKeepingAlive {
+                lm.startUpdatingLocation()
+                lm.startMonitoringSignificantLocationChanges()
             }
         @unknown default:
-            break
+            authStatus = "未知"
         }
+        print("[KeepAlive] location auth: \(authStatus)")
     }
 
-    @objc private func handleRouteChange(_ notification: Notification) {
-        guard let info = notification.userInfo,
-              let reasonValue = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
-              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
-
-        switch reason {
-        case .oldDeviceUnavailable:
-            // 耳机拔出等，iOS 会暂停播放，需要恢复
-            print("[KeepAlive] route change: old device unavailable, resuming playback")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                _ = self?.audioPlayer?.play()
-            }
-        default:
-            break
+    /// 系统暂停了定位更新时自动重启
+    func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
+        print("[KeepAlive] location updates paused by system, restarting")
+        DispatchQueue.main.async { [weak self] in
+            self?.lm.startUpdatingLocation()
+            self?.lm.startMonitoringSignificantLocationChanges()
         }
-    }
-
-    // MARK: - WAV 生成
-
-    /// 生成 1 秒低振幅正弦波 PCM WAV（44100Hz / 16bit / mono）
-    /// 振幅 ~1000/32767（约 3%），配合 volume=0.01 实际输出约 0.03%，完全不可感知
-    static func keepAliveWavData(seconds: Int) -> Data {
-        let sampleRate = 44100
-        let channels = 1
-        let bitsPerSample = 16
-        let numSamples = sampleRate * channels * seconds
-        let dataBytes = numSamples * bitsPerSample / 8
-
-        var d = Data()
-        func u32(_ v: UInt32) { var x = v.littleEndian; d.append(Data(bytes: &x, count: 4)) }
-        func u16(_ v: UInt16) { var x = v.littleEndian; d.append(Data(bytes: &x, count: 2)) }
-        func str(_ s: String) { d.append(s.data(using: .ascii)!) }
-
-        str("RIFF"); u32(UInt32(36 + dataBytes)); str("WAVE")
-        str("fmt "); u32(16); u16(1)                              // PCM
-        u16(UInt16(channels)); u32(UInt32(sampleRate))
-        u32(UInt32(sampleRate * channels * bitsPerSample / 8))   // byte rate
-        u16(UInt16(channels * bitsPerSample / 8))                 // block align
-        u16(UInt16(bitsPerSample))
-        str("data"); u32(UInt32(dataBytes))
-
-        // 200Hz 正弦波，振幅 1000（非零，iOS 不会检测为静音）
-        let frequency = 200.0
-        let amplitude = 1000.0
-        for i in 0..<numSamples {
-            let sample = Int16(amplitude * sin(2.0 * .pi * frequency * Double(i) / Double(sampleRate)))
-            var s = sample.littleEndian
-            d.append(Data(bytes: &s, count: 2))
-        }
-        return d
     }
 }

@@ -139,7 +139,7 @@ struct SettingsView: View {
             } header: {
                 Text("验证码灵动岛")
             } footer: {
-                Text("开启后保持后台连接，收到匹配规则的验证码时在灵动岛显示项目名与验证码。请保持 App 后台运行，系统极端省电下可能被回收。")
+                Text("开启后通过低功耗定位保持后台连接，收到匹配规则的验证码时在灵动岛显示。后台时通过本地通知可靠推送验证码，不会因系统限制丢失。")
             }
 
             Section {
@@ -156,16 +156,26 @@ struct SettingsView: View {
                         .foregroundStyle(mc.enabled ? .green : .secondary)
                 }
                 HStack {
-                    Text("音频保活")
+                    Text("定位保活")
                     Spacer()
                     Text(ka.isKeepingAlive ? "运行中" : "未运行")
                         .foregroundStyle(ka.isKeepingAlive ? .green : .red)
                 }
-                if ka.isKeepingAlive && !ka.startedAt.isEmpty {
+                if ka.isKeepingAlive {
                     HStack {
                         Text("保活启动于")
                         Spacer()
                         Text(ka.startedAt).foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("定位授权")
+                        Spacer()
+                        Text(ka.authStatus).foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("后台剩余")
+                        Spacer()
+                        Text("\(Int(ka.bgTimeRemaining))秒").foregroundStyle(.secondary)
                     }
                 }
                 if !ka.lastError.isEmpty {
@@ -218,12 +228,6 @@ struct SettingsView: View {
                     Text(la.notificationAuthorized ? "已授权" : "未授权")
                         .foregroundStyle(la.notificationAuthorized ? .green : .red)
                 }
-                HStack {
-                    Text("待命活动")
-                    Spacer()
-                    Text(la.standbyActive ? "存在" : "无")
-                        .foregroundStyle(la.standbyActive ? .green : .red)
-                }
                 if !la.lastUpdatePath.isEmpty {
                     HStack {
                         Text("更新路径")
@@ -269,7 +273,7 @@ struct SettingsView: View {
             } header: {
                 Text("调试信息")
             } footer: {
-                Text("前台使用 WebSocket 实时推送，后台切换为 HTTP 轮询。点击「测试灵动岛」可手动验证灵动岛功能是否正常。")
+                Text("前台使用 WebSocket 实时推送，后台切换为 HTTP 轮询。定位保活使用 3km 精度基站定位，功耗极低。点击「测试灵动岛」可手动验证。")
             }
 
             Section {
