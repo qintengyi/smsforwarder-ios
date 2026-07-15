@@ -144,6 +144,7 @@ struct SettingsView: View {
 
             Section {
                 let ws = WebSocketClient.shared
+                let poller = BackgroundPoller.shared
                 let la = LiveActivityManager.shared
                 let mc = MonitoringCoordinator.shared
 
@@ -158,6 +159,19 @@ struct SettingsView: View {
                     Spacer()
                     Text(ws.isConnected ? "已连接" : "未连接")
                         .foregroundStyle(ws.isConnected ? .green : .red)
+                }
+                HStack {
+                    Text("后台轮询")
+                    Spacer()
+                    Text(poller.isPolling ? "运行中" : "已停止")
+                        .foregroundStyle(poller.isPolling ? .green : .secondary)
+                }
+                if poller.isPolling && !poller.lastPollTime.isEmpty {
+                    HStack {
+                        Text("上次轮询")
+                        Spacer()
+                        Text(poller.lastPollTime).foregroundStyle(.secondary)
+                    }
                 }
                 HStack {
                     Text("连接次数")
@@ -201,7 +215,7 @@ struct SettingsView: View {
             } header: {
                 Text("调试信息")
             } footer: {
-                Text("如果WS连接显示未连接或连接次数持续增长，说明连接不稳定。点击「测试灵动岛」可手动验证灵动岛功能是否正常。")
+                Text("前台使用 WebSocket 实时推送，后台切换为 HTTP 轮询。点击「测试灵动岛」可手动验证灵动岛功能是否正常。")
             }
 
             Section {
