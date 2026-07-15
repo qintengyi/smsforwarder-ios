@@ -19,6 +19,10 @@ final class LoginViewModel {
     var isCheckingTurnstile: Bool = false
     var turnstileError: String? = nil
 
+    // QQ 机器人登录
+    var loginMode: LoginMode = .password
+    var botToken: String = ""
+
     private let store = SettingsStore.shared
     private let api = SmsForwarderAPI.shared
     var appState: AppStateManager?
@@ -30,11 +34,17 @@ final class LoginViewModel {
     }
 
     var canLogin: Bool {
-        !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        !password.isEmpty &&
-        !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        !isLoggingIn &&
-        (!turnstileEnabled || (turnstileToken != nil && !(turnstileToken?.isEmpty ?? true)))
+        let trimmedURL = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedURL.isEmpty, !isLoggingIn else { return false }
+
+        switch loginMode {
+        case .password:
+            return !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                   !password.isEmpty &&
+                   (!turnstileEnabled || (turnstileToken != nil && !(turnstileToken?.isEmpty ?? true)))
+        case .bot:
+            return !botToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 
     /// 检查 Turnstile 配置
@@ -63,6 +73,15 @@ final class LoginViewModel {
     }
 
     func login() async {
+        switch loginMode {
+        case .password:
+            await passwordLogin()
+        case .bot:
+            await botLogin()
+        }
+    }
+
+    private func passwordLogin() async {
         isLoggingIn = true
         defer { isLoggingIn = false }
 
@@ -100,6 +119,49 @@ final class LoginViewModel {
             showError = true
         }
     }
+
+    private func botLogin() async {
+        isLoggingIn = true
+        defer { isLoggingIn = false }
+
+        let trimmedURL = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedToken = botToken.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 保存面板地址
+        var settings = store.settings
+        settings.serverURL = trimmedURL
+        store.save(settings)
+
+        do {
+            let jwtToken = try await api.botLogin(token: trimmedToken, serverURL: trimmedURL)
+            // 尝试从 JWT 获取用户名（不强制要求）
+            var savedUsername = "QQ用户"
+            // bot exchange 返回的 username 可能为空，用默认值
+            store.saveLogin(token: jwtToken, username: savedUsername)
+            botToken = ""
+            await appState?.onLoginSuccess()
+        } catch let err as APIError {
+            errorMessage = err.errorDescription ?? "登录失败"
+            showError = true
+        } catch {
+            errorMessage = error.localizedDescription
+            showError = true
+        }
+    }
+}
+
+// MARK: - 登录方式
+
+enum LoginMode: String, CaseIterable {
+    case password = "账号密码"
+    case bot = "QQ机器人"
+
+    var icon: String {
+        switch self {
+        case .password: return "person.badge.key"
+        case .bot: return "message.fill"
+        }
+    }
 }
 
 // MARK: - 登录视图
@@ -130,68 +192,35 @@ struct LoginView: View {
                     }
                     .padding(.top, 20)
 
-                    // 表单
-                    VStack(spacing: 16) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("服务器地址")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            TextField("https://smsf.xiaoyyua.top", text: $vm.serverURL)
-                                .textFieldStyle(.roundedBorder)
-                                .keyboardType(.URL)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
+                    // 登录方式切换
+                    Picker("登录方式", selection: $vm.loginMode) {
+                        ForEach(LoginMode.allCases, id: \.self) { mode in
+                            Label(mode.rawValue, systemImage: mode.icon)
+                                .tag(mode)
                         }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 4)
 
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("用户名")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            TextField("用户名", text: $vm.username)
-                                .textFieldStyle(.roundedBorder)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                        }
-
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("密码")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            SecureField("密码", text: $vm.password)
-                                .textFieldStyle(.roundedBorder)
-                                .submitLabel(.go)
-                                .onSubmit {
-                                    if vm.canLogin {
-                                        Task { await vm.login() }
-                                    }
-                                }
-                        }
+                    // 服务器地址（两种模式共用）
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("服务器地址")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        TextField("https://smsf.xiaoyyua.top", text: $vm.serverURL)
+                            .textFieldStyle(.roundedBorder)
+                            .keyboardType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
                     }
                     .padding(.horizontal, 4)
 
-                    // Turnstile 人机验证
-                    if vm.isCheckingTurnstile {
-                        HStack(spacing: 6) {
-                            ProgressView()
-                                .scaleEffect(0.7)
-                            Text("正在检查人机验证配置…")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    } else if vm.turnstileEnabled && !vm.turnstileSiteKey.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("人机验证")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            TurnstileView(
-                                siteKey: vm.turnstileSiteKey,
-                                serverURL: vm.serverURL,
-                                onTokenChange: { token in
-                                    vm.onTurnstileToken(token)
-                                }
-                            )
-                        }
-                        .padding(.horizontal, 4)
+                    // 根据登录方式显示不同表单
+                    switch vm.loginMode {
+                    case .password:
+                        passwordForm
+                    case .bot:
+                        botForm
                     }
 
                     // 登录按钮
@@ -237,6 +266,110 @@ struct LoginView: View {
                 vm.turnstileToken = nil
             }
         }
+    }
+
+    // MARK: - 账号密码登录表单
+
+    private var passwordForm: some View {
+        VStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("用户名")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField("用户名", text: $vm.username)
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("密码")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                SecureField("密码", text: $vm.password)
+                    .textFieldStyle(.roundedBorder)
+                    .submitLabel(.go)
+                    .onSubmit {
+                        if vm.canLogin {
+                            Task { await vm.login() }
+                        }
+                    }
+            }
+
+            // Turnstile 人机验证
+            if vm.isCheckingTurnstile {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                    Text("正在检查人机验证配置…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if vm.turnstileEnabled && !vm.turnstileSiteKey.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("人机验证")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TurnstileView(
+                        siteKey: vm.turnstileSiteKey,
+                        serverURL: vm.serverURL,
+                        onTokenChange: { token in
+                            vm.onTurnstileToken(token)
+                        }
+                    )
+                }
+            }
+        }
+        .padding(.horizontal, 4)
+    }
+
+    // MARK: - QQ 机器人登录表单
+
+    private var botForm: some View {
+        VStack(spacing: 16) {
+            // 说明卡片
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "info.circle.fill")
+                        .foregroundStyle(.blue)
+                    Text("使用步骤")
+                        .font(.subheadline.bold())
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("1. 在 QQ 中向机器人发送「登录sms」")
+                    Text("2. 机器人会返回一个登录令牌")
+                    Text("3. 将令牌粘贴到下方输入框")
+                    Text("4. 点击登录即可（无需人机验证）")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(14)
+            .background(Color.blue.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("登录令牌")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField("粘贴机器人返回的令牌", text: $vm.botToken)
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.go)
+                    .onSubmit {
+                        if vm.canLogin {
+                            Task { await vm.login() }
+                        }
+                    }
+            }
+
+            Text("令牌 5 分钟内有效，仅可使用一次。")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 4)
     }
 }
 

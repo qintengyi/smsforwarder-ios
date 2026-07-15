@@ -343,6 +343,54 @@ final class SmsForwarderAPI {
         return token
     }
 
+    /// QQ 机器人登录（用一次性 token 换 JWT，无需 Turnstile）
+    /// - Parameters:
+    ///   - botToken: 从 QQ 机器人获取的一次性登录 token（5 分钟有效）
+    ///   - serverURL: 面板地址
+    /// - Returns: 登录成功后的 JWT token
+    func botLogin(token botToken: String, serverURL: String) async throws -> String {
+        guard !serverURL.isEmpty else { throw APIError.invalidURL }
+
+        var components = URLComponents(string: serverURL)
+        var basePath = components?.path ?? ""
+        if basePath.hasSuffix("/") { basePath.removeLast() }
+        components?.path = basePath + "/api/bot/exchange"
+
+        guard let url = components?.url else { throw APIError.invalidURL }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 15
+
+        let body: [String: Any] = ["token": botToken]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
+
+        let (rawData, response) = try await session.data(for: req)
+
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            if let errorResp = try? JSONDecoder().decode(APIResponse<EmptyData>.self, from: rawData) {
+                throw APIError.businessError(code: errorResp.code, message: errorResp.msg)
+            }
+            throw APIError.httpError(http.statusCode)
+        }
+
+        struct BotLoginData: Decodable {
+            let token: String
+            let id: Int?
+            let username: String?
+        }
+
+        let decoded = try JSONDecoder().decode(APIResponse<BotLoginData>.self, from: rawData)
+        if !decoded.isSuccess {
+            throw APIError.businessError(code: decoded.code, message: decoded.msg)
+        }
+        guard let jwtToken = decoded.data?.token, !jwtToken.isEmpty else {
+            throw APIError.decodeError("登录响应中缺少 token")
+        }
+        return jwtToken
+    }
+
     /// 获取用户信息
     func fetchProfile() async throws -> UserProfile {
         let resp: APIResponse<UserProfile> = try await get(path: "auth/profile")
