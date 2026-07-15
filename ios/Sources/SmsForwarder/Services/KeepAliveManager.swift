@@ -10,12 +10,13 @@ import UIKit
 /// 1. startMonitoringSignificantLocationChanges — 基站变化时唤醒 App（极低功耗）
 /// 2. startUpdatingLocation + kCLLocationAccuracyThreeKilometers — 3km 精度仅用基站 triangulation
 /// 3. beginBackgroundTask + 定时刷新 — 获取额外后台处理时间
-/// 4. 系统暂停后自动重启 — locationManagerDidPauseLocationUpdates
 ///
-/// ⚠️ 关键：allowsBackgroundLocationUpdates 必须在授权后设置，
-///    否则 iOS 会抛出 NSInternalInconsistencyException 崩溃
+/// ⚠️ 关键设计：
+/// - KeepAliveManager 只做 @Observable，不继承 NSObject（避免宏冲突崩溃）
+/// - CLLocationManagerDelegate 放到独立的 LocationDelegate 类
+/// - allowsBackgroundLocationUpdates 必须在授权后设置
 @Observable
-final class KeepAliveManager: NSObject, CLLocationManagerDelegate {
+final class KeepAliveManager {
     static let shared = KeepAliveManager()
 
     /// 是否正在保活
@@ -30,21 +31,30 @@ final class KeepAliveManager: NSObject, CLLocationManagerDelegate {
     var bgTimeRemaining: TimeInterval = 0
 
     @ObservationIgnored private let lm = CLLocationManager()
+    @ObservationIgnored private let delegate = LocationDelegate()
     @ObservationIgnored private var bgTaskId: UIBackgroundTaskIdentifier = UIBackgroundTaskIdentifier.invalid
     @ObservationIgnored private var bgTaskTimer: Timer?
     /// 定位更新是否已启动（防止重复启动）
     @ObservationIgnored private var locationUpdatesStarted: Bool = false
 
-    override init() {
-        super.init()
-        lm.delegate = self
-        // 3km 精度：仅使用基站 triangulation，不启用 GPS 芯片，功耗极低
+    init() {
+        // 配置 delegate 回调
+        delegate.onAuthChange = { [weak self] status in
+            self?.handleAuthChange(status)
+        }
+        delegate.onError = { [weak self] error in
+            self?.lastError = error
+        }
+        delegate.onPause = { [weak self] in
+            self?.handlePause()
+        }
+
+        // 配置 CLLocationManager
+        lm.delegate = delegate
         lm.desiredAccuracy = kCLLocationAccuracyThreeKilometers
-        // 不自动暂停定位更新
         lm.pausesLocationUpdatesAutomatically = false
         lm.activityType = .other
-        // ⚠️ 不在这里设置 allowsBackgroundLocationUpdates！
-        // 必须等用户授权后才能设置，否则崩溃
+        // ⚠️ allowsBackgroundLocationUpdates 在 startLocationUpdates() 中授权后设置
     }
 
     func start() {
@@ -61,11 +71,9 @@ final class KeepAliveManager: NSObject, CLLocationManagerDelegate {
 
         switch status {
         case .notDetermined:
-            // 请求授权，等回调后启动定位
             lm.requestWhenInUseAuthorization()
             authStatus = "等待授权"
         case .authorizedWhenInUse, .authorizedAlways:
-            // 已有授权，直接启动
             startLocationUpdates()
         case .denied, .restricted:
             lastError = "定位权限被拒绝，无法后台保活。请在设置→SmsForwarder→位置中开启"
@@ -112,9 +120,44 @@ final class KeepAliveManager: NSObject, CLLocationManagerDelegate {
         print("[KeepAlive] location updates started (accuracy=3km, significantChanges=on)")
     }
 
+    // MARK: - 授权回调处理
+
+    private func handleAuthChange(_ status: CLAuthorizationStatus) {
+        switch status {
+        case .notDetermined:
+            authStatus = "未请求"
+        case .restricted:
+            authStatus = "受限"
+        case .denied:
+            authStatus = "已拒绝"
+            lastError = "定位权限被拒绝，无法后台保活。请在设置→SmsForwarder→位置中开启"
+        case .authorizedAlways:
+            authStatus = "始终"
+            if isKeepingAlive && !locationUpdatesStarted {
+                startLocationUpdates()
+            }
+        case .authorizedWhenInUse:
+            authStatus = "使用时"
+            if isKeepingAlive && !locationUpdatesStarted {
+                startLocationUpdates()
+            }
+        @unknown default:
+            authStatus = "未知"
+        }
+        print("[KeepAlive] location auth changed: \(authStatus)")
+    }
+
+    private func handlePause() {
+        print("[KeepAlive] location updates paused by system, restarting")
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.locationUpdatesStarted else { return }
+            self.lm.startUpdatingLocation()
+            self.lm.startMonitoringSignificantLocationChanges()
+        }
+    }
+
     // MARK: - 后台任务管理
 
-    /// 启动定时器，每 5 秒刷新后台任务
     private func startBgTaskTimer() {
         bgTaskTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             self?.requestMoreBackgroundTime()
@@ -127,10 +170,7 @@ final class KeepAliveManager: NSObject, CLLocationManagerDelegate {
         bgTaskTimer = nil
     }
 
-    /// 请求更多后台处理时间
-    /// iOS 给约 30 秒后台时间，每 5 秒刷新一次确保不超时
     private func requestMoreBackgroundTime() {
-        // 先结束旧任务
         if bgTaskId != UIBackgroundTaskIdentifier.invalid {
             UIApplication.shared.endBackgroundTask(bgTaskId)
             bgTaskId = UIBackgroundTaskIdentifier.invalid
@@ -158,52 +198,29 @@ final class KeepAliveManager: NSObject, CLLocationManagerDelegate {
             bgTaskId = UIBackgroundTaskIdentifier.invalid
         }
     }
+}
 
-    // MARK: - CLLocationManagerDelegate
+// MARK: - CLLocationManagerDelegate 独立类
+// 与 @Observable 类分离，避免宏冲突崩溃
+
+private final class LocationDelegate: NSObject, CLLocationManagerDelegate {
+    var onAuthChange: ((CLAuthorizationStatus) -> Void)?
+    var onError: ((String) -> Void)?
+    var onPause: (() -> Void)?
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        // 位置更新保持 App 在后台不被挂起
-        // 我们不使用位置数据，仅利用定位回调保活
+        // 位置更新保持 App 在后台不被挂起，不使用位置数据
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        lastError = error.localizedDescription
-        print("[KeepAlive] location error: \(error.localizedDescription)")
+        onError?(error.localizedDescription)
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        let status = manager.authorizationStatus
-        switch status {
-        case .notDetermined:
-            authStatus = "未请求"
-        case .restricted:
-            authStatus = "受限"
-        case .denied:
-            authStatus = "已拒绝"
-            lastError = "定位权限被拒绝，无法后台保活。请在设置→SmsForwarder→位置中开启"
-        case .authorizedAlways:
-            authStatus = "始终"
-            if isKeepingAlive && !locationUpdatesStarted {
-                startLocationUpdates()
-            }
-        case .authorizedWhenInUse:
-            authStatus = "使用时"
-            if isKeepingAlive && !locationUpdatesStarted {
-                startLocationUpdates()
-            }
-        @unknown default:
-            authStatus = "未知"
-        }
-        print("[KeepAlive] location auth changed: \(authStatus)")
+        onAuthChange?(manager.authorizationStatus)
     }
 
-    /// 系统暂停了定位更新时自动重启
     func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
-        print("[KeepAlive] location updates paused by system, restarting")
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self, self.locationUpdatesStarted else { return }
-            self.lm.startUpdatingLocation()
-            self.lm.startMonitoringSignificantLocationChanges()
-        }
+        onPause?()
     }
 }
