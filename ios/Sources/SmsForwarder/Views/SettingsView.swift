@@ -145,6 +145,7 @@ struct SettingsView: View {
             Section {
                 let ws = WebSocketClient.shared
                 let poller = BackgroundPoller.shared
+                let ka = KeepAliveManager.shared
                 let la = LiveActivityManager.shared
                 let mc = MonitoringCoordinator.shared
 
@@ -153,6 +154,26 @@ struct SettingsView: View {
                     Spacer()
                     Text(mc.enabled ? "已开启" : "未开启")
                         .foregroundStyle(mc.enabled ? .green : .secondary)
+                }
+                HStack {
+                    Text("音频保活")
+                    Spacer()
+                    Text(ka.isKeepingAlive ? "运行中" : "未运行")
+                        .foregroundStyle(ka.isKeepingAlive ? .green : .red)
+                }
+                if ka.isKeepingAlive && !ka.startedAt.isEmpty {
+                    HStack {
+                        Text("保活启动于")
+                        Spacer()
+                        Text(ka.startedAt).foregroundStyle(.secondary)
+                    }
+                }
+                if !ka.lastError.isEmpty {
+                    HStack {
+                        Text("保活错误")
+                        Spacer()
+                        Text(ka.lastError).font(.caption).foregroundStyle(.red).lineLimit(2)
+                    }
                 }
                 HStack {
                     Text("WS 连接")
@@ -166,15 +187,22 @@ struct SettingsView: View {
                     Text(poller.isPolling ? "运行中" : "已停止")
                         .foregroundStyle(poller.isPolling ? .green : .secondary)
                 }
-                if poller.isPolling && !poller.lastPollTime.isEmpty {
+                if poller.isPolling {
                     HStack {
-                        Text("上次轮询")
+                        Text("轮询次数")
                         Spacer()
-                        Text(poller.lastPollTime).foregroundStyle(.secondary)
+                        Text("\(poller.pollCount)").foregroundStyle(.secondary)
+                    }
+                    if !poller.lastPollTime.isEmpty {
+                        HStack {
+                            Text("上次轮询")
+                            Spacer()
+                            Text(poller.lastPollTime).foregroundStyle(.secondary)
+                        }
                     }
                 }
                 HStack {
-                    Text("连接次数")
+                    Text("WS 连接次数")
                     Spacer()
                     Text("\(ws.connectCount)").foregroundStyle(.secondary)
                 }
@@ -186,7 +214,7 @@ struct SettingsView: View {
                 }
                 if let err = ws.lastError, !err.isEmpty {
                     HStack {
-                        Text("最后错误")
+                        Text("WS 错误")
                         Spacer()
                         Text(err).font(.caption).foregroundStyle(.red).lineLimit(2)
                     }

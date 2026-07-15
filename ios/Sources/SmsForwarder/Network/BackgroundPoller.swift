@@ -11,6 +11,7 @@ final class BackgroundPoller {
 
     var isPolling: Bool = false
     var lastPollTime: String = ""
+    var pollCount: Int = 0
 
     private var pollTask: Task<Void, Never>?
     /// 每个设备已知的最大 date 时间戳，用于去重
@@ -68,6 +69,8 @@ final class BackgroundPoller {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         lastPollTime = formatter.string(from: Date())
+        pollCount += 1
+        print("[Poller] poll #\(pollCount) completed at \(lastPollTime)")
     }
 
     // MARK: - 轮询单个设备
