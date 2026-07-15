@@ -212,6 +212,26 @@ struct SettingsView: View {
                     Text(la.activitiesEnabled ? "是" : "否（系统设置中未开启）")
                         .foregroundStyle(la.activitiesEnabled ? .green : .red)
                 }
+                HStack {
+                    Text("待命活动")
+                    Spacer()
+                    Text(la.standbyActive ? "存在" : "无")
+                        .foregroundStyle(la.standbyActive ? .green : .red)
+                }
+                if !la.lastUpdatePath.isEmpty {
+                    HStack {
+                        Text("更新路径")
+                        Spacer()
+                        Text(la.lastUpdatePath).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if la.pendingCount > 0 {
+                    HStack {
+                        Text("待显示")
+                        Spacer()
+                        Text("\(la.pendingCount) 条待显示").foregroundStyle(.orange)
+                    }
+                }
                 if let err = ws.lastError, !err.isEmpty {
                     HStack {
                         Text("WS 错误")

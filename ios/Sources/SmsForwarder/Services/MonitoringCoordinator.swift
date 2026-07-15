@@ -81,7 +81,7 @@ final class MonitoringCoordinator {
     }
 
     /// App 回到前台：停止 poller，只在 WS 断开时重连
-    /// 确保待命灵动岛存在（可能被系统清理）
+    /// 处理后台暂存的验证码 + 确保待命灵动岛存在
     func onForeground() {
         guard isBackground else { return }
         isBackground = false
@@ -91,6 +91,8 @@ final class MonitoringCoordinator {
             if !ws.isConnected {
                 ws.start()
             }
+            // 先处理后台暂存的验证码（如果有）
+            la.processPending()
             // 确保待命灵动岛存在
             la.startStandby()
         }
