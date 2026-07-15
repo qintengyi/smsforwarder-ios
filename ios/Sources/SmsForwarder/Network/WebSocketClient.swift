@@ -26,6 +26,9 @@ final class WebSocketClient {
     private var shouldRun: Bool = false
     private let settingsStore = SettingsStore.shared
 
+    /// 连接代次（每次 connect() 递增），用于识别过期的回调
+    private var generation: Int = 0
+
     /// 收到匹配设备的短信回调：(deviceId, deviceName, sms)
     var onSMS: ((Int, String, WSSmsRecord) -> Void)?
 
@@ -33,12 +36,16 @@ final class WebSocketClient {
 
     func start() {
         shouldRun = true
-        connect()
+        DispatchQueue.main.async { [weak self] in
+            self?.connect()
+        }
     }
 
     func stop() {
         shouldRun = false
-        teardown()
+        DispatchQueue.main.async { [weak self] in
+            self?.teardown()
+        }
     }
 
     private func teardown() {
@@ -51,13 +58,17 @@ final class WebSocketClient {
         isConnected = false
     }
 
+    /// 必须在主线程调用
     private func connect() {
+        assert(Thread.isMainThread, "connect() must be on main thread")
         guard shouldRun else { return }
         let settings = settingsStore.settings
         guard settings.isLoggedIn, let token = settings.token, !token.isEmpty else { return }
         guard let url = buildWSURL(serverURL: settings.serverURL, token: token) else { return }
 
         teardown()
+        generation += 1
+        let gen = generation
 
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
@@ -70,20 +81,25 @@ final class WebSocketClient {
 
         isConnected = true
         reconnectAttempts = 0
-        receiveLoop()
+
+        receiveLoop(generation: gen)
         startPing()
-        // 连接建立后订阅当前规则涉及的所有设备
-        DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            self?.subscribeAll()
-        }
+
+        // 连接建立后立即订阅（URLSessionWebSocketTask 会排队消息，等连接就绪后发送）
+        subscribeAll()
     }
 
     private func reconnect() {
         guard shouldRun else { return }
         reconnectAttempts += 1
         let delay = min(2.0 * Double(reconnectAttempts), 15.0)
-        DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.connect()
+        let attempts = reconnectAttempts
+        NSLog("[WSClient] reconnect in %.0fs (attempt %d)", delay, attempts)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self = self else { return }
+            // 再次检查 shouldRun，避免 stop 后又重连
+            guard self.shouldRun else { return }
+            self.connect()
         }
     }
 
@@ -103,28 +119,36 @@ final class WebSocketClient {
 
     // MARK: - 接收循环
 
-    private func receiveLoop() {
+    /// 带代次标记的接收循环，过期回调不会触发重连
+    private func receiveLoop(generation gen: Int) {
         task?.receive { [weak self] result in
             guard let self = self else { return }
-            switch result {
-            case .failure(let error):
-                DispatchQueue.main.async {
+            // 切到主线程处理，确保 generation 检查安全
+            DispatchQueue.main.async {
+                // 如果代次不匹配，说明这是旧连接的回调，忽略
+                guard self.generation == gen else {
+                    NSLog("[WSClient] stale receive callback (gen %d, current %d), ignoring", gen, self.generation)
+                    return
+                }
+                switch result {
+                case .failure(let error):
                     self.isConnected = false
                     self.lastError = error.localizedDescription
-                }
-                self.reconnect()
-            case .success(let msg):
-                switch msg {
-                case .data(let data):
-                    self.handleData(data)
-                case .string(let str):
-                    if let data = str.data(using: .utf8) {
+                    NSLog("[WSClient] receive error: %@", error.localizedDescription)
+                    self.reconnect()
+                case .success(let msg):
+                    switch msg {
+                    case .data(let data):
                         self.handleData(data)
+                    case .string(let str):
+                        if let data = str.data(using: .utf8) {
+                            self.handleData(data)
+                        }
+                    @unknown default:
+                        break
                     }
-                @unknown default:
-                    break
+                    self.receiveLoop(generation: gen)
                 }
-                self.receiveLoop()
             }
         }
     }
@@ -140,13 +164,17 @@ final class WebSocketClient {
             guard deviceId > 0, let smsJson = json["sms"] else { return }
             guard let smsData = try? JSONSerialization.data(withJSONObject: smsJson),
                   let sms = try? JSONDecoder().decode(WSSmsRecord.self, from: smsData) else { return }
-            DispatchQueue.main.async {
-                self.onSMS?(deviceId, deviceName, sms)
+            NSLog("[WSClient] received SMS: device=%d name=%@ content=%@", deviceId, deviceName, (sms.content ?? "").prefix(60))
+            self.onSMS?(deviceId, deviceName, sms)
+        case "ack":
+            // 订阅确认，记录但不处理
+            if let ok = json["ok"] as? Bool, let devId = json["device_id"] as? NSNumber {
+                NSLog("[WSClient] subscribe ack: device=%d ok=%@", devId.intValue, ok ? "true" : "false")
             }
-        case "ack", "pong":
+        case "pong":
             break
         default:
-            break
+            NSLog("[WSClient] unknown message type: %@", type)
         }
     }
 
@@ -154,6 +182,7 @@ final class WebSocketClient {
 
     func subscribeAll() {
         let ids = RuleStore.shared.subscribedDeviceIds
+        NSLog("[WSClient] subscribeAll: deviceIds = %@", ids.map { String($0) }.joined(separator: ","))
         for id in ids { subscribe(deviceId: id) }
     }
 
@@ -168,11 +197,16 @@ final class WebSocketClient {
     private func send(_ dict: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: dict),
               let str = String(data: data, encoding: .utf8) else { return }
-        task?.send(.string(str)) { _ in }
+        task?.send(.string(str)) { error in
+            if let error = error {
+                NSLog("[WSClient] send error: %@", error.localizedDescription)
+            }
+        }
     }
 
     private func startPing() {
         pingTimer?.invalidate()
+        // Timer 必须在主线程创建才能在主 RunLoop 上调度
         pingTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
             self?.send(["action": "ping"])
         }

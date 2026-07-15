@@ -32,6 +32,11 @@ final class MonitoringCoordinator {
     /// 根据「开关 + 登录状态」启动或停止监听
     func apply() {
         let loggedIn = SettingsStore.shared.settings.isLoggedIn
+        NSLog("[Monitor] apply: enabled=%@ loggedIn=%@ rulesCount=%d deviceIds=%@",
+              enabled ? "true" : "false",
+              loggedIn ? "true" : "false",
+              RuleStore.shared.rules.count,
+              RuleStore.shared.subscribedDeviceIds.map { String($0) }.joined(separator: ","))
         if enabled && loggedIn {
             ws.start()
             ka.start()
