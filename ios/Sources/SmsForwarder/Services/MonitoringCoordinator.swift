@@ -10,6 +10,8 @@ final class MonitoringCoordinator {
 
     /// 是否正在运行（供 UI 显示状态）
     var isRunning: Bool = false
+    /// 是否在后台（供 scenePhase 切换用）
+    private var isBackground: Bool = false
 
     private let ws = WebSocketClient.shared
     private let ka = KeepAliveManager.shared
@@ -41,6 +43,24 @@ final class MonitoringCoordinator {
             ws.stop()
             ka.stop()
             isRunning = false
+        }
+    }
+
+    /// App 进入后台：断开 WS（iOS 后台会强制中断），保持 audio 保活
+    func onBackground() {
+        isBackground = true
+        print("[Monitor] onBackground: disconnecting WS, keeping audio alive")
+        ws.stop()  // 主动断开，避免系统 abort 错误暴露给用户
+    }
+
+    /// App 回到前台：立即重连 WS
+    func onForeground() {
+        guard isBackground else { return }
+        isBackground = false
+        print("[Monitor] onForeground: reconnecting WS")
+        // 只在监听开关开启且已登录时重连
+        if enabled && SettingsStore.shared.settings.isLoggedIn {
+            ws.start()
         }
     }
 

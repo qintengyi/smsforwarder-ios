@@ -39,15 +39,23 @@ final class WebSocketClient {
 
     func start() {
         shouldRun = true
-        DispatchQueue.main.async { [weak self] in
-            self?.connect()
+        if Thread.isMainThread {
+            connect()
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.connect()
+            }
         }
     }
 
     func stop() {
         shouldRun = false
-        DispatchQueue.main.async { [weak self] in
-            self?.teardown()
+        if Thread.isMainThread {
+            teardown()
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.teardown()
+            }
         }
     }
 
@@ -138,9 +146,15 @@ final class WebSocketClient {
                 switch result {
                 case .failure(let error):
                     self.isConnected = false
-                    self.lastError = error.localizedDescription
-                    print("[WSClient] receive error: \(error.localizedDescription)")
-                    self.reconnect()
+                    // 主动断开（stop() 被调用）时不设置 lastError 也不重连，
+                    // 避免 iOS 后台强制中断的 "Software caused connection abort" 暴露给用户
+                    if self.shouldRun {
+                        self.lastError = error.localizedDescription
+                        print("[WSClient] receive error: \(error.localizedDescription)")
+                        self.reconnect()
+                    } else {
+                        print("[WSClient] connection closed by stop(), ignoring error")
+                    }
                 case .success(let msg):
                     switch msg {
                     case .data(let data):

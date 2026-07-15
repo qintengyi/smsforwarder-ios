@@ -38,6 +38,7 @@ final class AppStateManager {
 @main
 struct SmsForwarderApp: App {
     @State private var appState = AppStateManager()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -58,6 +59,16 @@ struct SmsForwarderApp: App {
                 MonitoringCoordinator.shared.setup()
             } else {
                 MonitoringCoordinator.shared.onLogout()
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .background:
+                MonitoringCoordinator.shared.onBackground()
+            case .active:
+                MonitoringCoordinator.shared.onForeground()
+            default:
+                break
             }
         }
     }
