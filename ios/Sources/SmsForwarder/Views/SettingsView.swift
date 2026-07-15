@@ -213,6 +213,12 @@ struct SettingsView: View {
                         .foregroundStyle(la.activitiesEnabled ? .green : .red)
                 }
                 HStack {
+                    Text("通知权限")
+                    Spacer()
+                    Text(la.notificationAuthorized ? "已授权" : "未授权")
+                        .foregroundStyle(la.notificationAuthorized ? .green : .red)
+                }
+                HStack {
                     Text("待命活动")
                     Spacer()
                     Text(la.standbyActive ? "存在" : "无")

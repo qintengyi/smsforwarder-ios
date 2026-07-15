@@ -32,6 +32,7 @@ final class MonitoringCoordinator {
     /// 应用启动 / 登录成功后调用
     func setup() {
         la.cleanupStale()
+        la.requestNotificationPermission()
         // WebSocket 和 Poller 共用同一个回调，都路由到 LiveActivityManager
         ws.onSMS = { [weak self] deviceId, deviceName, sms in
             self?.la.handleSMS(deviceId: deviceId, deviceName: deviceName, sms: sms)
@@ -47,6 +48,8 @@ final class MonitoringCoordinator {
         let loggedIn = SettingsStore.shared.settings.isLoggedIn
         print("[Monitor] apply: enabled=\(enabled) loggedIn=\(loggedIn) isBackground=\(isBackground) rulesCount=\(RuleStore.shared.rules.count) deviceIds=\(RuleStore.shared.subscribedDeviceIds.map { String($0) }.joined(separator: ","))")
         if enabled && loggedIn {
+            // 确保通知权限（本地通知是后台验证码的可靠通道）
+            la.requestNotificationPermission()
             if isBackground {
                 // 后台：WS 保持 + poller 后备
                 ws.start()
