@@ -148,12 +148,27 @@ struct SettingsView: View {
                 let ka = KeepAliveManager.shared
                 let la = LiveActivityManager.shared
                 let mc = MonitoringCoordinator.shared
+                let rs = RuleStore.shared
 
                 HStack {
                     Text("监听开关")
                     Spacer()
                     Text(mc.enabled ? "已开启" : "未开启")
                         .foregroundStyle(mc.enabled ? .green : .secondary)
+                }
+                HStack {
+                    Text("订阅规则")
+                    Spacer()
+                    Text(rs.rules.isEmpty ? "无（需添加）" : "\(rs.rules.count) 条")
+                        .foregroundStyle(rs.rules.isEmpty ? .red : .secondary)
+                }
+                if !rs.rules.isEmpty {
+                    HStack {
+                        Text("订阅设备")
+                        Spacer()
+                        Text(rs.subscribedDeviceIds.isEmpty ? "无" : rs.subscribedDeviceIds.map { String($0) }.joined(separator: ","))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 HStack {
                     Text("定位保活")
@@ -280,7 +295,7 @@ struct SettingsView: View {
             } header: {
                 Text("调试信息")
             } footer: {
-                Text("前台使用 WebSocket 实时推送，后台切换为 HTTP 轮询。定位保活使用 3km 精度基站定位，功耗极低。点击「测试灵动岛」可手动验证。")
+                Text("前台 WebSocket + HTTP 轮询双保险，后台仅 HTTP 轮询。定位保活使用基站定位（极低功耗）。收到匹配规则的验证码时在灵动岛显示。")
             }
 
             Section {

@@ -109,11 +109,16 @@ final class WebSocketClient {
         reconnectAttempts += 1
         let delay = min(2.0 * Double(reconnectAttempts), 15.0)
         let attempts = reconnectAttempts
+        let gen = generation  // 捕获当前代次，防止 start() 后旧定时器干扰新连接
         print("[WSClient] reconnect in \(delay)s (attempt \(attempts))")
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self = self else { return }
-            // 再次检查 shouldRun，避免 stop 后又重连
             guard self.shouldRun else { return }
+            // 代次不匹配说明 start() 已发起新连接，跳过这次重连
+            guard self.generation == gen else {
+                print("[WSClient] stale reconnect (gen \(gen), current \(self.generation)), skipping")
+                return
+            }
             self.connect()
         }
     }
