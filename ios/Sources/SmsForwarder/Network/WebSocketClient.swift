@@ -94,7 +94,7 @@ final class WebSocketClient {
         reconnectAttempts += 1
         let delay = min(2.0 * Double(reconnectAttempts), 15.0)
         let attempts = reconnectAttempts
-        NSLog("[WSClient] reconnect in %.0fs (attempt %d)", delay, attempts)
+        print("[WSClient] reconnect in \(delay)s (attempt \(attempts))")
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self = self else { return }
             // 再次检查 shouldRun，避免 stop 后又重连
@@ -127,14 +127,14 @@ final class WebSocketClient {
             DispatchQueue.main.async {
                 // 如果代次不匹配，说明这是旧连接的回调，忽略
                 guard self.generation == gen else {
-                    NSLog("[WSClient] stale receive callback (gen %d, current %d), ignoring", gen, self.generation)
+                    print("[WSClient] stale receive callback (gen \(gen), current \(self.generation)), ignoring")
                     return
                 }
                 switch result {
                 case .failure(let error):
                     self.isConnected = false
                     self.lastError = error.localizedDescription
-                    NSLog("[WSClient] receive error: %@", error.localizedDescription)
+                    print("[WSClient] receive error: \(error.localizedDescription)")
                     self.reconnect()
                 case .success(let msg):
                     switch msg {
@@ -164,17 +164,17 @@ final class WebSocketClient {
             guard deviceId > 0, let smsJson = json["sms"] else { return }
             guard let smsData = try? JSONSerialization.data(withJSONObject: smsJson),
                   let sms = try? JSONDecoder().decode(WSSmsRecord.self, from: smsData) else { return }
-            NSLog("[WSClient] received SMS: device=%d name=%@ content=%@", deviceId, deviceName, (sms.content ?? "").prefix(60))
+            print("[WSClient] received SMS: device=\(deviceId) name=\(deviceName) content=\(String((sms.content ?? "").prefix(60)))")
             self.onSMS?(deviceId, deviceName, sms)
         case "ack":
             // 订阅确认，记录但不处理
             if let ok = json["ok"] as? Bool, let devId = json["device_id"] as? NSNumber {
-                NSLog("[WSClient] subscribe ack: device=%d ok=%@", devId.intValue, ok ? "true" : "false")
+                print("[WSClient] subscribe ack: device=\(devId.intValue) ok=\(ok)")
             }
         case "pong":
             break
         default:
-            NSLog("[WSClient] unknown message type: %@", type)
+            print("[WSClient] unknown message type: \(type)")
         }
     }
 
@@ -182,7 +182,7 @@ final class WebSocketClient {
 
     func subscribeAll() {
         let ids = RuleStore.shared.subscribedDeviceIds
-        NSLog("[WSClient] subscribeAll: deviceIds = %@", ids.map { String($0) }.joined(separator: ","))
+        print("[WSClient] subscribeAll: deviceIds = \(ids.map { String($0) }.joined(separator: ","))")
         for id in ids { subscribe(deviceId: id) }
     }
 
@@ -199,7 +199,7 @@ final class WebSocketClient {
               let str = String(data: data, encoding: .utf8) else { return }
         task?.send(.string(str)) { error in
             if let error = error {
-                NSLog("[WSClient] send error: %@", error.localizedDescription)
+                print("[WSClient] send error: \(error.localizedDescription)")
             }
         }
     }

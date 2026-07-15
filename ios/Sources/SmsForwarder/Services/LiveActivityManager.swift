@@ -16,32 +16,32 @@ final class LiveActivityManager {
     func handleSMS(deviceId: Int, deviceName: String, sms: WSSmsRecord) {
         let content = sms.content ?? ""
         guard !content.isEmpty else {
-            NSLog("[LiveActivity] handleSMS skipped: empty content")
+            print("[LiveActivity] handleSMS skipped: empty content")
             return
         }
 
-        NSLog("[LiveActivity] handleSMS: deviceId=%d name=%@ content=%@", deviceId, deviceName, String(content.prefix(80)))
+        print("[LiveActivity] handleSMS: deviceId=\(deviceId) name=\(deviceName) content=\(String(content.prefix(80)))")
 
         let rules = RuleStore.shared.matchingRules(deviceId: deviceId, content: content)
         guard let rule = rules.first else {
-            NSLog("[LiveActivity] no matching rule for device %d (rules count=%d)", deviceId, RuleStore.shared.rules.count)
+            print("[LiveActivity] no matching rule for device \(deviceId) (rules count=\(RuleStore.shared.rules.count))")
             return
         }
         guard let code = CodeExtractor.code(from: content) else {
-            NSLog("[LiveActivity] rule matched but no code extracted from: %@", String(content.prefix(80)))
+            print("[LiveActivity] rule matched but no code extracted from: \(String(content.prefix(80)))")
             return
         }
 
         let projectName = CodeExtractor.projectName(from: content, fallback: sms.name)
         let sender = (sms.name?.isEmpty == false ? sms.name : sms.number) ?? "未知发送方"
-        NSLog("[LiveActivity] starting activity: project=%@ code=%@ sender=%@ device=%@", projectName, code, sender, deviceName)
+        print("[LiveActivity] starting activity: project=\(projectName) code=\(code) sender=\(sender) device=\(deviceName)")
         startActivity(rule: rule, projectName: projectName, code: code, sender: sender, deviceName: deviceName)
     }
 
     /// 启动灵动岛（同规则先结束旧的，避免重复）
     func startActivity(rule: CodeRule, projectName: String, code: String, sender: String, deviceName: String) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
-            NSLog("[LiveActivity] activities not enabled (user may have disabled in Settings)")
+            print("[LiveActivity] activities not enabled (user may have disabled in Settings)")
             return
         }
 
@@ -67,7 +67,7 @@ final class LiveActivityManager {
                 pushType: nil
             )
             activities[rule.id] = activity
-            NSLog("[LiveActivity] activity started successfully: project=%@ code=%@", projectName, code)
+            print("[LiveActivity] activity started successfully: project=\(projectName) code=\(code)")
 
             // 到时自动结束
             let ruleId = rule.id
@@ -75,7 +75,7 @@ final class LiveActivityManager {
                 self?.endActivity(ruleId: ruleId)
             }
         } catch {
-            NSLog("[LiveActivity] failed to start activity: %@", error.localizedDescription)
+            print("[LiveActivity] failed to start activity: \(error.localizedDescription)")
         }
     }
 
