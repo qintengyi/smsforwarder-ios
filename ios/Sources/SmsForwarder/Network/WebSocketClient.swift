@@ -39,6 +39,8 @@ final class WebSocketClient {
 
     func start() {
         shouldRun = true
+        // 已连接则不重复连接，避免连接次数无谓增长
+        guard !isConnected else { return }
         if Thread.isMainThread {
             connect()
         } else {

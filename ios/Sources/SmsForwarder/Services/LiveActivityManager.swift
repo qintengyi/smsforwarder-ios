@@ -12,6 +12,10 @@ final class LiveActivityManager {
     /// 当前活跃的活动（ruleId -> Activity）
     private var activities: [String: Activity<CodeActivityAttributes>] = [:]
 
+    /// 去重：5 秒内相同内容的短信不重复处理（防止 WS + poller 双路径重复触发）
+    private var lastProcessedContent: String = ""
+    private var lastProcessedTime: Date = .distantPast
+
     /// 调试信息
     var lastDebugLog: String = ""
     var activitiesEnabled: Bool { ActivityAuthorizationInfo().areActivitiesEnabled }
@@ -23,6 +27,15 @@ final class LiveActivityManager {
             lastDebugLog = "[\(timeStr())] 收到空短信，跳过"
             return
         }
+
+        // 去重：5 秒内相同内容跳过（WS 和 poller 可能同时推送同一条短信）
+        let now = Date()
+        if content == lastProcessedContent && now.timeIntervalSince(lastProcessedTime) < 5 {
+            print("[LiveActivity] duplicate SMS skipped: \(String(content.prefix(60)))")
+            return
+        }
+        lastProcessedContent = content
+        lastProcessedTime = now
 
         let rules = RuleStore.shared.matchingRules(deviceId: deviceId, content: content)
         guard let rule = rules.first else {

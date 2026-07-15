@@ -7,8 +7,9 @@ import Observation
 ///
 /// 策略：
 /// - 前台：WebSocket 实时推送（低延迟）
-/// - 后台：HTTP 轮询（可靠，不受 iOS WebSocket 后台限制影响）
+/// - 后台：WebSocket 保持 + HTTP 轮询作为后备（双保险）
 /// - audio 后台保活贯穿前后台，让 App 在后台不被挂起
+/// - LiveActivityManager 内置 5 秒去重，防止 WS + poller 双路径重复触发
 @Observable
 final class MonitoringCoordinator {
     static let shared = MonitoringCoordinator()
@@ -47,11 +48,11 @@ final class MonitoringCoordinator {
         print("[Monitor] apply: enabled=\(enabled) loggedIn=\(loggedIn) isBackground=\(isBackground) rulesCount=\(RuleStore.shared.rules.count) deviceIds=\(RuleStore.shared.subscribedDeviceIds.map { String($0) }.joined(separator: ","))")
         if enabled && loggedIn {
             if isBackground {
-                // 后台：用 HTTP 轮询
-                ws.stop()
+                // 后台：WS 保持 + poller 后备
+                ws.start()
                 poller.start()
             } else {
-                // 前台：用 WebSocket
+                // 前台：只用 WS
                 poller.stop()
                 ws.start()
             }
@@ -65,24 +66,25 @@ final class MonitoringCoordinator {
         }
     }
 
-    /// App 进入后台：切换到 HTTP 轮询模式
-    /// WebSocket 在后台容易被 iOS 系统强制中断，HTTP 请求更可靠
+    /// App 进入后台：WS 保持连接 + 启动 HTTP 轮询作为后备
+    /// 如果 audio 保活生效，WS 可能在后台也能保持
+    /// 如果 WS 被系统中断，poller 仍然能获取短信
     func onBackground() {
         isBackground = true
-        print("[Monitor] onBackground: switching to HTTP polling")
-        ws.stop()
+        print("[Monitor] onBackground: starting poller as backup (WS stays alive)")
         if enabled && SettingsStore.shared.settings.isLoggedIn {
             poller.start()
         }
+        // 不主动断开 WS
     }
 
-    /// App 回到前台：切换回 WebSocket 实时模式
+    /// App 回到前台：停止 poller，只在 WS 断开时重连
     func onForeground() {
         guard isBackground else { return }
         isBackground = false
-        print("[Monitor] onForeground: switching to WebSocket")
+        print("[Monitor] onForeground: stopping poller, ws.isConnected=\(ws.isConnected)")
         poller.stop()
-        if enabled && SettingsStore.shared.settings.isLoggedIn {
+        if enabled && SettingsStore.shared.settings.isLoggedIn && !ws.isConnected {
             ws.start()
         }
     }
