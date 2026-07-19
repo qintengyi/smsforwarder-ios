@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import CoreLocation
 
 // MARK: - API 错误
 
@@ -419,28 +420,23 @@ final class SmsForwarderAPI {
         return resp.data ?? DeviceConfig()
     }
 
-    /// 检查设备在线状态（通过代理）
-    /// 该方法高度容错：设备 /health 端点返回格式可能多样，
-    /// 可能是标准 {code,msg,data:{online:true}}，也可能是简单 {online:true} 或 {status:"ok"}
+    /// 检查设备在线状态（面板级健康检查）
+    /// 使用面板专用探活接口 GET /api/device/:id/health，面板内部会先尝试 /health（Magisk daemon 专有），
+    /// 失败后回退 /config/query（SMS Forwarder APK 原版也有），兼容两种设备类型。
+    /// 面板还维护了在线状态缓存（Hub 4s 轮询的副产物），避免单次探活因网络抖动误判离线。
+    /// 网络错误时返回 false（视为离线），authRequired 向上抛出要求重新登录。
     func checkProxyHealth() async throws -> Bool {
-        struct HealthData: Decodable {
-            let online: Bool?
-            let status: String?
-        }
-
         guard let deviceId = deviceStore.currentDeviceId else {
             throw APIError.noDeviceSelected
         }
 
-        let url = try buildProxyURL(deviceId: deviceId, path: "/health")
+        let url = try buildAPIURL(path: "device/\(deviceId)/health")
         var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
-        req.timeoutInterval = 15 // 健康检查用较短超时
+        req.httpMethod = "GET"
+        req.timeoutInterval = 20 // 面板探活可能需要 /health + /config/query 两次探测（缓存命中时秒回）
         if let token = settingsStore.settings.token, !token.isEmpty {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        req.httpBody = try JSONSerialization.data(withJSONObject: [:], options: [])
 
         let (rawData, response): (Data, URLResponse)
         do {
@@ -454,43 +450,24 @@ final class SmsForwarderAPI {
         if http.statusCode == 401 { throw APIError.authRequired }
         if !(200..<300).contains(http.statusCode) { return false }
 
-        // 1. 尝试标准 APIResponse<HealthData> 格式
-        if let resp = try? JSONDecoder().decode(APIResponse<HealthData>.self, from: rawData) {
+        // 解析 {code:200, data:{online:true, duration_ms:N, probe:"/health"|"/config/query"|"cache"}}
+        if let resp = try? JSONDecoder().decode(APIResponse<DeviceHealth>.self, from: rawData) {
             if resp.code == 401 { throw APIError.authRequired }
-            if let online = resp.data?.online { return online }
-            if let status = resp.data?.status?.lowercased() {
-                return status == "ok" || status == "online" || status == "healthy"
-            }
-            // 请求成功且 code==200，视为在线
-            return resp.isSuccess
+            return resp.data?.online ?? false
         }
 
-        // 2. 尝试简单 JSON 对象格式 {online: true} 或 {status: "ok"}
+        // 容错：JSONSerialization 解析
         if let jsonObj = try? JSONSerialization.jsonObject(with: rawData) as? [String: Any] {
-            // 检查是否有 code 字段（说明是 APIResponse 但 data 结构不同）
             if let code = jsonObj["code"] as? Int {
                 if code == 401 { throw APIError.authRequired }
                 if code != 200 { return false }
-                // code==200，请求成功
                 if let dataObj = jsonObj["data"] as? [String: Any] {
-                    if let online = dataObj["online"] as? Bool { return online }
-                    if let status = dataObj["status"] as? String {
-                        return status.lowercased() == "ok" || status.lowercased() == "online"
-                    }
+                    return dataObj["online"] as? Bool ?? false
                 }
-                return true
             }
-            // 无 code 字段的简单格式
-            if let online = jsonObj["online"] as? Bool { return online }
-            if let status = jsonObj["status"] as? String {
-                return status.lowercased() == "ok" || status.lowercased() == "online"
-            }
-            // 有 JSON 响应但格式未知，请求成功说明设备可达
-            return true
         }
 
-        // 3. 无法解析 JSON，但 HTTP 200，保守返回 true
-        return true
+        return false
     }
 
     /// 发送短信（通过代理）
@@ -566,9 +543,44 @@ final class SmsForwarderAPI {
     }
 
     /// 查询定位（通过代理）
+    /// 如果设备未返回地址（如 Magisk daemon 只返回坐标），用系统 CLGeocoder 做逆地理编码补充。
     func queryLocation() async throws -> LocationInfo {
         let resp: APIResponse<LocationInfo> = try await proxyCall(path: "/location/query", body: [:])
-        return resp.data ?? LocationInfo(address: nil, latitude: nil, longitude: nil, time: nil, provider: nil)
+        var loc = resp.data ?? LocationInfo(address: nil, latitude: nil, longitude: nil, time: nil, provider: nil)
+        // Magisk daemon 的 /location/query 不返回 address 字段，用系统逆地理编码补充
+        if (loc.address == nil || loc.address?.isEmpty == true),
+           let lat = loc.latitude, let lng = loc.longitude {
+            if let addr = await reverseGeocode(latitude: lat, longitude: lng) {
+                loc = LocationInfo(address: addr, latitude: lat, longitude: lng, time: loc.time, provider: loc.provider)
+            }
+        }
+        return loc
+    }
+
+    /// 系统逆地理编码（CLGeocoder），在中国大陆使用高德数据源，精度可接受。
+    /// 失败时返回 nil，不影响坐标显示。
+    private func reverseGeocode(latitude: Double, longitude: Double) async -> String? {
+        let geocoder = CLGeocoder()
+        let location = CLLocation(latitude: latitude, longitude: longitude)
+        return await withCheckedContinuation { continuation in
+            geocoder.reverseGeocodeLocation(location) { placemarks, error in
+                guard error == nil, let placemark = placemarks?.first else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                // 拼接：省 + 市 + 区 + 街道 + 门牌号
+                var parts: [String] = []
+                if let admin = placemark.administrativeArea, !admin.isEmpty { parts.append(admin) }
+                if let locality = placemark.locality, !locality.isEmpty, locality != placemark.administrativeArea {
+                    parts.append(locality)
+                }
+                if let subLocality = placemark.subLocality, !subLocality.isEmpty { parts.append(subLocality) }
+                if let thoroughfare = placemark.thoroughfare, !thoroughfare.isEmpty { parts.append(thoroughfare) }
+                if let subThoroughfare = placemark.subThoroughfare, !subThoroughfare.isEmpty { parts.append(subThoroughfare) }
+                let address = parts.joined()
+                continuation.resume(returning: address.isEmpty ? placemark.name : address)
+            }
+        }
     }
 }
 
