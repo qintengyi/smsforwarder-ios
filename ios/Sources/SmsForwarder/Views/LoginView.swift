@@ -19,9 +19,8 @@ final class LoginViewModel {
     var isCheckingTurnstile: Bool = false
     var turnstileError: String? = nil
 
-    // QQ 机器人登录
-    var loginMode: LoginMode = .password
-    var botToken: String = ""
+    // 登录方式
+    var loginMode: LoginMode = .oidc
 
     private let store = SettingsStore.shared
     private let api = SmsForwarderAPI.shared
@@ -38,12 +37,13 @@ final class LoginViewModel {
         guard !trimmedURL.isEmpty, !isLoggingIn else { return false }
 
         switch loginMode {
+        case .oidc:
+            // OIDC 登录只需面板地址
+            return true
         case .password:
             return !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
                    !password.isEmpty &&
                    (!turnstileEnabled || (turnstileToken != nil && !(turnstileToken?.isEmpty ?? true)))
-        case .bot:
-            return !botToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
 
@@ -74,12 +74,44 @@ final class LoginViewModel {
 
     func login() async {
         switch loginMode {
+        case .oidc:
+            await oidcLogin()
         case .password:
             await passwordLogin()
-        case .bot:
-            await botLogin()
         }
     }
+
+    // MARK: - OIDC 登录
+
+    private func oidcLogin() async {
+        isLoggingIn = true
+        defer { isLoggingIn = false }
+
+        let trimmedURL = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 保存面板地址
+        var settings = store.settings
+        settings.serverURL = trimmedURL
+        store.save(settings)
+
+        do {
+            let result = try await OIDCManager.shared.startOIDCLogin(panelURL: trimmedURL)
+            store.saveLogin(token: result.jwt, username: result.username)
+            await appState?.onLoginSuccess()
+        } catch let err as OIDCError {
+            if case .userCancelled = err { return } // 用户取消不显示错误
+            errorMessage = err.errorDescription ?? "OIDC 登录失败"
+            showError = true
+        } catch let err as APIError {
+            errorMessage = err.errorDescription ?? "登录失败"
+            showError = true
+        } catch {
+            errorMessage = error.localizedDescription
+            showError = true
+        }
+    }
+
+    // MARK: - 密码登录
 
     private func passwordLogin() async {
         isLoggingIn = true
@@ -119,47 +151,18 @@ final class LoginViewModel {
             showError = true
         }
     }
-
-    private func botLogin() async {
-        isLoggingIn = true
-        defer { isLoggingIn = false }
-
-        let trimmedURL = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedToken = botToken.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // 保存面板地址
-        var settings = store.settings
-        settings.serverURL = trimmedURL
-        store.save(settings)
-
-        do {
-            let jwtToken = try await api.botLogin(token: trimmedToken, serverURL: trimmedURL)
-            // 尝试从 JWT 获取用户名（不强制要求）
-            var savedUsername = "QQ用户"
-            // bot exchange 返回的 username 可能为空，用默认值
-            store.saveLogin(token: jwtToken, username: savedUsername)
-            botToken = ""
-            await appState?.onLoginSuccess()
-        } catch let err as APIError {
-            errorMessage = err.errorDescription ?? "登录失败"
-            showError = true
-        } catch {
-            errorMessage = error.localizedDescription
-            showError = true
-        }
-    }
 }
 
 // MARK: - 登录方式
 
 enum LoginMode: String, CaseIterable {
+    case oidc = "QQ验证登录"
     case password = "账号密码"
-    case bot = "QQ机器人"
 
     var icon: String {
         switch self {
+        case .oidc: return "person.badge.shield.checkmark.fill"
         case .password: return "person.badge.key"
-        case .bot: return "message.fill"
         }
     }
 }
@@ -217,10 +220,10 @@ struct LoginView: View {
 
                     // 根据登录方式显示不同表单
                     switch vm.loginMode {
+                    case .oidc:
+                        oidcForm
                     case .password:
                         passwordForm
-                    case .bot:
-                        botForm
                     }
 
                     // 登录按钮
@@ -266,6 +269,36 @@ struct LoginView: View {
                 vm.turnstileToken = nil
             }
         }
+    }
+
+    // MARK: - OIDC 登录表单
+
+    private var oidcForm: some View {
+        VStack(spacing: 16) {
+            // 说明卡片
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "shield.checkered")
+                        .foregroundStyle(.blue)
+                    Text("QQ 验证登录")
+                        .font(.subheadline.bold())
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("1. 点击「登录」后自动打开验证页面")
+                    Text("2. 在页面中输入你的 QQ 号")
+                    Text("3. QQ 机器人会发送一条验证链接")
+                    Text("4. 在 QQ 中点击该链接完成验证")
+                    Text("5. App 自动完成登录，无需密码")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(14)
+            .background(Color.blue.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .padding(.horizontal, 4)
     }
 
     // MARK: - 账号密码登录表单
@@ -319,55 +352,6 @@ struct LoginView: View {
                     )
                 }
             }
-        }
-        .padding(.horizontal, 4)
-    }
-
-    // MARK: - QQ 机器人登录表单
-
-    private var botForm: some View {
-        VStack(spacing: 16) {
-            // 说明卡片
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    Image(systemName: "info.circle.fill")
-                        .foregroundStyle(.blue)
-                    Text("使用步骤")
-                        .font(.subheadline.bold())
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("1. 在 QQ 中向机器人发送「登录sms」")
-                    Text("2. 机器人会返回一个登录令牌")
-                    Text("3. 将令牌粘贴到下方输入框")
-                    Text("4. 点击登录即可（无需人机验证）")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(14)
-            .background(Color.blue.opacity(0.06))
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("登录令牌")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextField("粘贴机器人返回的令牌", text: $vm.botToken)
-                    .textFieldStyle(.roundedBorder)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .submitLabel(.go)
-                    .onSubmit {
-                        if vm.canLogin {
-                            Task { await vm.login() }
-                        }
-                    }
-            }
-
-            Text("令牌 5 分钟内有效，仅可使用一次。")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 4)
     }
